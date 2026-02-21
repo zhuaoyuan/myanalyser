@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -43,13 +44,21 @@ OVERVIEW_COLUMNS = [
     "跟踪标的",
 ]
 
-NAV_COLUMNS = ["基金代码", "净值日期", "累计净值"]
+UNIT_NAV_COLUMNS = ["基金代码", "净值日期", "单位净值", "日增长率"]
+BONUS_COLUMNS = ["基金代码", "年份", "权益登记日", "除息日", "每份分红", "分红发放日"]
+SPLIT_COLUMNS = ["基金代码", "年份", "拆分折算日", "拆分类型", "拆分折算比例"]
+PERSONNEL_COLUMNS = ["基金代码", "公告标题", "基金名称", "公告日期", "报告ID"]
 
 
 @dataclass
 class RetryConfig:
     max_retries: int = 3
     retry_sleep_seconds: float = 1.0
+
+
+@dataclass
+class ProgressConfig:
+    print_interval_seconds: float = 5.0
 
 
 def _ensure_dir(path: Path) -> None:
@@ -93,10 +102,23 @@ def _append_failure_log(log_path: Path, code: str, stage: str, error: str) -> No
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def _fetch_personnel_announcement(symbol: str) -> pd.DataFrame:
+    try:
+        return ak.fund_announcement_personnel_em(symbol=symbol)
+    except ValueError as err:
+        # AkShare 在部分基金“人事公告无数据”时会抛 Length mismatch，按空结果处理。
+        if "Length mismatch" in str(err):
+            return pd.DataFrame(columns=PERSONNEL_COLUMNS)
+        raise
+
+
 def verify_interfaces(sample_code: str = "015641", nav_code: str = "166009") -> dict:
     purchase_df = ak.fund_purchase_em()
     overview_df = ak.fund_overview_em(symbol=sample_code)
-    nav_df = ak.fund_open_fund_info_em(symbol=nav_code, indicator="累计净值走势")
+    nav_df = ak.fund_open_fund_info_em(symbol=nav_code, indicator="单位净值走势")
+    bonus_df = ak.fund_open_fund_info_em(symbol=nav_code, indicator="分红送配详情")
+    split_df = ak.fund_open_fund_info_em(symbol=nav_code, indicator="拆分详情")
+    personnel_df = _fetch_personnel_announcement(symbol=sample_code)
 
     overview_cols = set(overview_df.columns)
     missing_overview = [
@@ -142,8 +164,30 @@ def verify_interfaces(sample_code: str = "015641", nav_code: str = "166009") -> 
         "fund_open_fund_info_em": {
             "rows": int(len(nav_df)),
             "columns": list(nav_df.columns),
-            "required_columns_present": all(col in nav_df.columns for col in ["净值日期", "累计净值"]),
-            "missing_required": [col for col in ["净值日期", "累计净值"] if col not in nav_df.columns],
+            "required_columns_present": all(col in nav_df.columns for col in ["净值日期", "单位净值", "日增长率"]),
+            "missing_required": [col for col in ["净值日期", "单位净值", "日增长率"] if col not in nav_df.columns],
+        },
+        "fund_open_fund_bonus_em": {
+            "rows": int(len(bonus_df)),
+            "columns": list(bonus_df.columns),
+            "required_columns_present": all(col in bonus_df.columns for col in ["年份", "权益登记日", "除息日", "每份分红", "分红发放日"]),
+            "missing_required": [col for col in ["年份", "权益登记日", "除息日", "每份分红", "分红发放日"] if col not in bonus_df.columns],
+        },
+        "fund_open_fund_split_em": {
+            "rows": int(len(split_df)),
+            "columns": list(split_df.columns),
+            "required_columns_present": all(col in split_df.columns for col in ["年份", "拆分折算日", "拆分类型", "拆分折算比例"]),
+            "missing_required": [col for col in ["年份", "拆分折算日", "拆分类型", "拆分折算比例"] if col not in split_df.columns],
+        },
+        "fund_announcement_personnel_em": {
+            "rows": int(len(personnel_df)),
+            "columns": list(personnel_df.columns),
+            "required_columns_present": all(
+                col in personnel_df.columns for col in ["基金代码", "公告标题", "基金名称", "公告日期", "报告ID"]
+            ),
+            "missing_required": [
+                col for col in ["基金代码", "公告标题", "基金名称", "公告日期", "报告ID"] if col not in personnel_df.columns
+            ],
         },
     }
     return result
@@ -206,13 +250,30 @@ def _normalize_overview(df: pd.DataFrame, code: str) -> pd.DataFrame:
     return normalized
 
 
+def _print_progress(
+    stage: str,
+    processed: int,
+    total: int,
+    success: int,
+    failed: int,
+    already_done: int,
+) -> None:
+    print(
+        f"[{stage}] progress processed={processed}/{total} success={success} "
+        f"failed={failed} already_done={already_done}"
+    )
+
+
 def run_step2_overview(
     purchase_csv: Path,
     overview_csv: Path,
     fail_log: Path,
     retry_cfg: RetryConfig,
+    max_workers: int = 8,
+    progress_cfg: ProgressConfig | None = None,
     only_codes: Sequence[str] | None = None,
 ) -> dict:
+    progress_cfg = progress_cfg or ProgressConfig()
     all_codes = _load_codes_from_purchase(purchase_csv)
     done_codes = _load_done_codes_from_overview(overview_csv)
 
@@ -224,36 +285,65 @@ def run_step2_overview(
 
     to_fetch = [code for code in target_codes if code not in done_codes]
 
-    frames: list[pd.DataFrame] = []
     success = 0
     failed = 0
-
-    for code in to_fetch:
-        try:
-            raw_df = _with_retry(
-                lambda c=code: ak.fund_overview_em(symbol=c),
-                cfg=retry_cfg,
-                code=code,
-                stage="step2_overview",
-            )
-            one = _normalize_overview(raw_df, code)
-            frames.append(one)
-            success += 1
-        except Exception as err:  # noqa: BLE001
-            failed += 1
-            _append_failure_log(fail_log, code=code, stage="step2_overview", error=str(err))
+    processed = len(target_codes) - len(to_fetch)
+    last_print_ts = time.monotonic()
 
     _ensure_dir(overview_csv.parent)
-    if frames:
-        new_df = pd.concat(frames, ignore_index=True)
-        write_header = not overview_csv.exists()
-        new_df.to_csv(
-            overview_csv,
-            mode="a",
-            index=False,
-            header=write_header,
-            encoding="utf-8-sig",
-        )
+    write_header = not overview_csv.exists() or overview_csv.stat().st_size == 0
+
+    if to_fetch:
+        with ThreadPoolExecutor(max_workers=max(1, max_workers)) as executor:
+            futures = {
+                executor.submit(
+                    _with_retry,
+                    lambda c=code: ak.fund_overview_em(symbol=c),
+                    retry_cfg,
+                    code,
+                    "step2_overview",
+                ): code
+                for code in to_fetch
+            }
+            for future in as_completed(futures):
+                code = futures[future]
+                processed += 1
+                try:
+                    raw_df = future.result()
+                    one = _normalize_overview(raw_df, code)
+                    one.to_csv(
+                        overview_csv,
+                        mode="a",
+                        index=False,
+                        header=write_header,
+                        encoding="utf-8-sig",
+                    )
+                    write_header = False
+                    success += 1
+                except Exception as err:  # noqa: BLE001
+                    failed += 1
+                    _append_failure_log(fail_log, code=code, stage="step2_overview", error=str(err))
+
+                now = time.monotonic()
+                if now - last_print_ts >= progress_cfg.print_interval_seconds:
+                    _print_progress(
+                        stage="step2",
+                        processed=processed,
+                        total=len(target_codes),
+                        success=success,
+                        failed=failed,
+                        already_done=len(target_codes) - len(to_fetch),
+                    )
+                    last_print_ts = now
+
+    _print_progress(
+        stage="step2",
+        processed=len(target_codes),
+        total=len(target_codes),
+        success=success,
+        failed=failed,
+        already_done=len(target_codes) - len(to_fetch),
+    )
 
     return {
         "total_codes": len(target_codes),
@@ -263,23 +353,29 @@ def run_step2_overview(
     }
 
 
-def _load_done_codes_from_nav(nav_dir: Path) -> set[str]:
-    if not nav_dir.exists():
+def _load_done_codes_from_dir(data_dir: Path) -> set[str]:
+    if not data_dir.exists():
         return set()
     done = set()
-    for path in nav_dir.glob("*.csv"):
+    for path in data_dir.glob("*.csv"):
         done.add(path.stem)
     return done
 
 
 def _normalize_nav(df: pd.DataFrame, code: str) -> pd.DataFrame:
-    if "净值日期" not in df.columns or "累计净值" not in df.columns:
+    if "净值日期" not in df.columns or "单位净值" not in df.columns:
         raise ValueError(f"step3 missing columns for {code}: {df.columns.tolist()}")
-    out = df[["净值日期", "累计净值"]].copy()
+    out = df.copy()
+    for col in ["净值日期", "单位净值", "日增长率"]:
+        if col not in out.columns:
+            out[col] = ""
+    out = out[["净值日期", "单位净值", "日增长率"]].copy()
     out.insert(0, "基金代码", _safe_str_code(code))
     out["净值日期"] = pd.to_datetime(out["净值日期"], errors="coerce").dt.strftime("%Y-%m-%d")
-    out = out.dropna(subset=["净值日期", "累计净值"])
-    out = out[NAV_COLUMNS]
+    out["单位净值"] = pd.to_numeric(out["单位净值"], errors="coerce")
+    out["日增长率"] = pd.to_numeric(out["日增长率"], errors="coerce")
+    out = out.dropna(subset=["净值日期", "单位净值"])
+    out = out[UNIT_NAV_COLUMNS]
     return out
 
 
@@ -288,10 +384,13 @@ def run_step3_nav(
     nav_dir: Path,
     fail_log: Path,
     retry_cfg: RetryConfig,
+    max_workers: int = 8,
+    progress_cfg: ProgressConfig | None = None,
     only_codes: Sequence[str] | None = None,
 ) -> dict:
+    progress_cfg = progress_cfg or ProgressConfig()
     all_codes = _load_codes_from_purchase(purchase_csv)
-    done_codes = _load_done_codes_from_nav(nav_dir)
+    done_codes = _load_done_codes_from_dir(nav_dir)
 
     if only_codes is not None:
         requested = {_safe_str_code(code) for code in only_codes}
@@ -306,14 +405,20 @@ def run_step3_nav(
     success = 0
     failed = 0
     total_rows = 0
+    processed = len(target_codes) - len(to_fetch)
+    last_print_ts = time.monotonic()
+
+    if max_workers > 1:
+        print("[step3] ignore max_workers, run serial requests by design")
 
     for code in to_fetch:
+        processed += 1
         try:
             raw_df = _with_retry(
-                lambda c=code: ak.fund_open_fund_info_em(symbol=c, indicator="累计净值走势"),
-                cfg=retry_cfg,
-                code=code,
-                stage="step3_nav",
+                lambda c=code: ak.fund_open_fund_info_em(symbol=c, indicator="单位净值走势"),
+                retry_cfg,
+                code,
+                "step3_nav",
             )
             one = _normalize_nav(raw_df, code)
             out_path = nav_dir / f"{code}.csv"
@@ -323,6 +428,258 @@ def run_step3_nav(
         except Exception as err:  # noqa: BLE001
             failed += 1
             _append_failure_log(fail_log, code=code, stage="step3_nav", error=str(err))
+
+        now = time.monotonic()
+        if now - last_print_ts >= progress_cfg.print_interval_seconds:
+            _print_progress(
+                stage="step3",
+                processed=processed,
+                total=len(target_codes),
+                success=success,
+                failed=failed,
+                already_done=len(target_codes) - len(to_fetch),
+            )
+            last_print_ts = now
+
+    _print_progress(
+        stage="step3",
+        processed=len(target_codes),
+        total=len(target_codes),
+        success=success,
+        failed=failed,
+        already_done=len(target_codes) - len(to_fetch),
+    )
+
+    return {
+        "total_codes": len(target_codes),
+        "already_done": len(target_codes) - len(to_fetch),
+        "fetched": success,
+        "failed": failed,
+        "rows_written": total_rows,
+    }
+
+
+def _normalize_bonus(df: pd.DataFrame, code: str) -> pd.DataFrame:
+    out = df.copy()
+    for col in ["年份", "权益登记日", "除息日", "每份分红", "分红发放日"]:
+        if col not in out.columns:
+            out[col] = ""
+    out = out[["年份", "权益登记日", "除息日", "每份分红", "分红发放日"]].copy()
+    out.insert(0, "基金代码", _safe_str_code(code))
+    for col in ["权益登记日", "除息日", "分红发放日"]:
+        out[col] = pd.to_datetime(out[col], errors="coerce").dt.strftime("%Y-%m-%d")
+    return out[BONUS_COLUMNS]
+
+
+def _normalize_split(df: pd.DataFrame, code: str) -> pd.DataFrame:
+    out = df.copy()
+    for col in ["年份", "拆分折算日", "拆分类型", "拆分折算比例"]:
+        if col not in out.columns:
+            out[col] = ""
+    out = out[["年份", "拆分折算日", "拆分类型", "拆分折算比例"]].copy()
+    out.insert(0, "基金代码", _safe_str_code(code))
+    out["拆分折算日"] = pd.to_datetime(out["拆分折算日"], errors="coerce").dt.strftime("%Y-%m-%d")
+    return out[SPLIT_COLUMNS]
+
+
+def _run_step_fund_info_serial(
+    *,
+    purchase_csv: Path,
+    out_dir: Path,
+    fail_log: Path,
+    retry_cfg: RetryConfig,
+    progress_cfg: ProgressConfig,
+    indicator: str,
+    stage_name: str,
+    normalize_fn: Callable[[pd.DataFrame, str], pd.DataFrame],
+    only_codes: Sequence[str] | None,
+) -> dict:
+    all_codes = _load_codes_from_purchase(purchase_csv)
+    done_codes = _load_done_codes_from_dir(out_dir)
+
+    if only_codes is not None:
+        requested = {_safe_str_code(code) for code in only_codes}
+        target_codes = [code for code in all_codes if code in requested]
+    else:
+        target_codes = all_codes
+
+    to_fetch = [code for code in target_codes if code not in done_codes]
+    _ensure_dir(out_dir)
+
+    success = 0
+    failed = 0
+    total_rows = 0
+    processed = len(target_codes) - len(to_fetch)
+    last_print_ts = time.monotonic()
+
+    for code in to_fetch:
+        processed += 1
+        try:
+            raw_df = _with_retry(
+                lambda c=code, ind=indicator: ak.fund_open_fund_info_em(symbol=c, indicator=ind),
+                retry_cfg,
+                code,
+                stage_name,
+            )
+            one = normalize_fn(raw_df, code)
+            out_path = out_dir / f"{code}.csv"
+            one.to_csv(out_path, index=False, encoding="utf-8-sig")
+            success += 1
+            total_rows += len(one)
+        except Exception as err:  # noqa: BLE001
+            failed += 1
+            _append_failure_log(fail_log, code=code, stage=stage_name, error=str(err))
+
+        now = time.monotonic()
+        if now - last_print_ts >= progress_cfg.print_interval_seconds:
+            _print_progress(
+                stage=stage_name.replace("_", "-"),
+                processed=processed,
+                total=len(target_codes),
+                success=success,
+                failed=failed,
+                already_done=len(target_codes) - len(to_fetch),
+            )
+            last_print_ts = now
+
+    _print_progress(
+        stage=stage_name.replace("_", "-"),
+        processed=len(target_codes),
+        total=len(target_codes),
+        success=success,
+        failed=failed,
+        already_done=len(target_codes) - len(to_fetch),
+    )
+
+    return {
+        "total_codes": len(target_codes),
+        "already_done": len(target_codes) - len(to_fetch),
+        "fetched": success,
+        "failed": failed,
+        "rows_written": total_rows,
+    }
+
+
+def run_step4_bonus(
+    purchase_csv: Path,
+    bonus_dir: Path,
+    fail_log: Path,
+    retry_cfg: RetryConfig,
+    progress_cfg: ProgressConfig | None = None,
+    only_codes: Sequence[str] | None = None,
+) -> dict:
+    progress_cfg = progress_cfg or ProgressConfig()
+    return _run_step_fund_info_serial(
+        purchase_csv=purchase_csv,
+        out_dir=bonus_dir,
+        fail_log=fail_log,
+        retry_cfg=retry_cfg,
+        progress_cfg=progress_cfg,
+        indicator="分红送配详情",
+        stage_name="step4_bonus",
+        normalize_fn=_normalize_bonus,
+        only_codes=only_codes,
+    )
+
+
+def run_step5_split(
+    purchase_csv: Path,
+    split_dir: Path,
+    fail_log: Path,
+    retry_cfg: RetryConfig,
+    progress_cfg: ProgressConfig | None = None,
+    only_codes: Sequence[str] | None = None,
+) -> dict:
+    progress_cfg = progress_cfg or ProgressConfig()
+    return _run_step_fund_info_serial(
+        purchase_csv=purchase_csv,
+        out_dir=split_dir,
+        fail_log=fail_log,
+        retry_cfg=retry_cfg,
+        progress_cfg=progress_cfg,
+        indicator="拆分详情",
+        stage_name="step5_split",
+        normalize_fn=_normalize_split,
+        only_codes=only_codes,
+    )
+
+
+def _normalize_personnel(df: pd.DataFrame, code: str) -> pd.DataFrame:
+    out = df.copy()
+    for col in ["公告标题", "基金名称", "公告日期", "报告ID"]:
+        if col not in out.columns:
+            out[col] = ""
+    out = out[["公告标题", "基金名称", "公告日期", "报告ID"]].copy()
+    out.insert(0, "基金代码", _safe_str_code(code))
+    out["公告日期"] = pd.to_datetime(out["公告日期"], errors="coerce").dt.strftime("%Y-%m-%d")
+    return out[PERSONNEL_COLUMNS]
+
+
+def run_step6_personnel(
+    purchase_csv: Path,
+    personnel_dir: Path,
+    fail_log: Path,
+    retry_cfg: RetryConfig,
+    progress_cfg: ProgressConfig | None = None,
+    only_codes: Sequence[str] | None = None,
+) -> dict:
+    progress_cfg = progress_cfg or ProgressConfig()
+    all_codes = _load_codes_from_purchase(purchase_csv)
+    done_codes = _load_done_codes_from_dir(personnel_dir)
+
+    if only_codes is not None:
+        requested = {_safe_str_code(code) for code in only_codes}
+        target_codes = [code for code in all_codes if code in requested]
+    else:
+        target_codes = all_codes
+
+    to_fetch = [code for code in target_codes if code not in done_codes]
+    _ensure_dir(personnel_dir)
+
+    success = 0
+    failed = 0
+    total_rows = 0
+    processed = len(target_codes) - len(to_fetch)
+    last_print_ts = time.monotonic()
+
+    for code in to_fetch:
+        processed += 1
+        try:
+            raw_df = _with_retry(
+                lambda c=code: _fetch_personnel_announcement(symbol=c),
+                retry_cfg,
+                code,
+                "step6_personnel",
+            )
+            one = _normalize_personnel(raw_df, code)
+            out_path = personnel_dir / f"{code}.csv"
+            one.to_csv(out_path, index=False, encoding="utf-8-sig")
+            success += 1
+            total_rows += len(one)
+        except Exception as err:  # noqa: BLE001
+            failed += 1
+            _append_failure_log(fail_log, code=code, stage="step6_personnel", error=str(err))
+
+        now = time.monotonic()
+        if now - last_print_ts >= progress_cfg.print_interval_seconds:
+            _print_progress(
+                stage="step6-personnel",
+                processed=processed,
+                total=len(target_codes),
+                success=success,
+                failed=failed,
+                already_done=len(target_codes) - len(to_fetch),
+            )
+            last_print_ts = now
+
+    _print_progress(
+        stage="step6-personnel",
+        processed=len(target_codes),
+        total=len(target_codes),
+        success=success,
+        failed=failed,
+        already_done=len(target_codes) - len(to_fetch),
+    )
 
     return {
         "total_codes": len(target_codes),
@@ -354,12 +711,18 @@ def _load_failed_codes(log_paths: Iterable[Path], stage: str) -> list[str]:
 
 def _default_paths(base_dir: Path) -> dict[str, Path]:
     return {
-        "purchase_csv": base_dir / "fund_purchase_samples.csv",
+        "purchase_csv": base_dir / "fund_purchase.csv",
         "overview_csv": base_dir / "fund_overview.csv",
         "nav_dir": base_dir / "fund_nav_by_code",
+        "bonus_dir": base_dir / "fund_bonus_by_code",
+        "split_dir": base_dir / "fund_split_by_code",
+        "personnel_dir": base_dir / "fund_personnel_by_code",
         "verify_json": base_dir / "verify_report.json",
         "fail_overview_log": base_dir / "failed_overview.jsonl",
         "fail_nav_log": base_dir / "failed_nav.jsonl",
+        "fail_bonus_log": base_dir / "failed_bonus.jsonl",
+        "fail_split_log": base_dir / "failed_split.jsonl",
+        "fail_personnel_log": base_dir / "failed_personnel.jsonl",
     }
 
 
@@ -368,16 +731,34 @@ def main() -> None:
     parser.add_argument("--base-dir", default="myanalyser/data/fund_etl", help="输出目录")
     parser.add_argument(
         "--mode",
-        choices=["all", "step1", "step2", "step3", "verify", "retry-overview", "retry-nav", "retry-all"],
+        choices=[
+            "all",
+            "step1",
+            "step2",
+            "step3",
+            "step4",
+            "step5",
+            "step6",
+            "verify",
+            "retry-overview",
+            "retry-nav",
+            "retry-bonus",
+            "retry-split",
+            "retry-personnel",
+            "retry-all",
+        ],
         default="all",
     )
     parser.add_argument("--max-retries", type=int, default=3)
     parser.add_argument("--retry-sleep", type=float, default=1.0)
+    parser.add_argument("--max-workers", type=int, default=8)
+    parser.add_argument("--progress-interval", type=float, default=5.0)
     args = parser.parse_args()
 
     base_dir = Path(args.base_dir)
     paths = _default_paths(base_dir)
     retry_cfg = RetryConfig(max_retries=args.max_retries, retry_sleep_seconds=args.retry_sleep)
+    progress_cfg = ProgressConfig(print_interval_seconds=args.progress_interval)
 
     if args.mode in {"verify", "all"}:
         report = verify_interfaces()
@@ -396,6 +777,8 @@ def main() -> None:
             overview_csv=paths["overview_csv"],
             fail_log=paths["fail_overview_log"],
             retry_cfg=retry_cfg,
+            max_workers=args.max_workers,
+            progress_cfg=progress_cfg,
         )
         print(f"[step2] {summary}")
 
@@ -405,8 +788,40 @@ def main() -> None:
             nav_dir=paths["nav_dir"],
             fail_log=paths["fail_nav_log"],
             retry_cfg=retry_cfg,
+            max_workers=args.max_workers,
+            progress_cfg=progress_cfg,
         )
         print(f"[step3] {summary}")
+
+    if args.mode in {"step4", "all"}:
+        summary = run_step4_bonus(
+            purchase_csv=paths["purchase_csv"],
+            bonus_dir=paths["bonus_dir"],
+            fail_log=paths["fail_bonus_log"],
+            retry_cfg=retry_cfg,
+            progress_cfg=progress_cfg,
+        )
+        print(f"[step4] {summary}")
+
+    if args.mode in {"step5", "all"}:
+        summary = run_step5_split(
+            purchase_csv=paths["purchase_csv"],
+            split_dir=paths["split_dir"],
+            fail_log=paths["fail_split_log"],
+            retry_cfg=retry_cfg,
+            progress_cfg=progress_cfg,
+        )
+        print(f"[step5] {summary}")
+
+    if args.mode in {"step6", "all"}:
+        summary = run_step6_personnel(
+            purchase_csv=paths["purchase_csv"],
+            personnel_dir=paths["personnel_dir"],
+            fail_log=paths["fail_personnel_log"],
+            retry_cfg=retry_cfg,
+            progress_cfg=progress_cfg,
+        )
+        print(f"[step6] {summary}")
 
     if args.mode in {"retry-overview", "retry-all"}:
         failed_codes = _load_failed_codes([paths["fail_overview_log"]], stage="step2_overview")
@@ -415,6 +830,8 @@ def main() -> None:
             overview_csv=paths["overview_csv"],
             fail_log=paths["fail_overview_log"],
             retry_cfg=retry_cfg,
+            max_workers=args.max_workers,
+            progress_cfg=progress_cfg,
             only_codes=failed_codes,
         )
         print(f"[retry-overview] failed_codes={len(failed_codes)} summary={summary}")
@@ -426,9 +843,47 @@ def main() -> None:
             nav_dir=paths["nav_dir"],
             fail_log=paths["fail_nav_log"],
             retry_cfg=retry_cfg,
+            max_workers=args.max_workers,
+            progress_cfg=progress_cfg,
             only_codes=failed_codes,
         )
         print(f"[retry-nav] failed_codes={len(failed_codes)} summary={summary}")
+
+    if args.mode in {"retry-bonus", "retry-all"}:
+        failed_codes = _load_failed_codes([paths["fail_bonus_log"]], stage="step4_bonus")
+        summary = run_step4_bonus(
+            purchase_csv=paths["purchase_csv"],
+            bonus_dir=paths["bonus_dir"],
+            fail_log=paths["fail_bonus_log"],
+            retry_cfg=retry_cfg,
+            progress_cfg=progress_cfg,
+            only_codes=failed_codes,
+        )
+        print(f"[retry-bonus] failed_codes={len(failed_codes)} summary={summary}")
+
+    if args.mode in {"retry-split", "retry-all"}:
+        failed_codes = _load_failed_codes([paths["fail_split_log"]], stage="step5_split")
+        summary = run_step5_split(
+            purchase_csv=paths["purchase_csv"],
+            split_dir=paths["split_dir"],
+            fail_log=paths["fail_split_log"],
+            retry_cfg=retry_cfg,
+            progress_cfg=progress_cfg,
+            only_codes=failed_codes,
+        )
+        print(f"[retry-split] failed_codes={len(failed_codes)} summary={summary}")
+
+    if args.mode in {"retry-personnel", "retry-all"}:
+        failed_codes = _load_failed_codes([paths["fail_personnel_log"]], stage="step6_personnel")
+        summary = run_step6_personnel(
+            purchase_csv=paths["purchase_csv"],
+            personnel_dir=paths["personnel_dir"],
+            fail_log=paths["fail_personnel_log"],
+            retry_cfg=retry_cfg,
+            progress_cfg=progress_cfg,
+            only_codes=failed_codes,
+        )
+        print(f"[retry-personnel] failed_codes={len(failed_codes)} summary={summary}")
 
 
 if __name__ == "__main__":

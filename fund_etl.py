@@ -48,6 +48,7 @@ UNIT_NAV_COLUMNS = ["基金代码", "净值日期", "单位净值", "日增长�
 BONUS_COLUMNS = ["基金代码", "年份", "权益登记日", "除息日", "每份分红", "分红发放日"]
 SPLIT_COLUMNS = ["基金代码", "年份", "拆分折算日", "拆分类型", "拆分折算比例"]
 PERSONNEL_COLUMNS = ["基金代码", "公告标题", "基金名称", "公告日期", "报告ID"]
+CUM_RETURN_COLUMNS = ["基金代码", "日期", "累计收益率"]
 
 
 @dataclass
@@ -118,6 +119,7 @@ def verify_interfaces(sample_code: str = "015641", nav_code: str = "166009") -> 
     nav_df = ak.fund_open_fund_info_em(symbol=nav_code, indicator="单位净值走势")
     bonus_df = ak.fund_open_fund_info_em(symbol=nav_code, indicator="分红送配详情")
     split_df = ak.fund_open_fund_info_em(symbol=nav_code, indicator="拆分详情")
+    cum_return_df = ak.fund_open_fund_info_em(symbol=nav_code, indicator="累计收益率走势", period="成立来")
     personnel_df = _fetch_personnel_announcement(symbol=sample_code)
 
     overview_cols = set(overview_df.columns)
@@ -178,6 +180,12 @@ def verify_interfaces(sample_code: str = "015641", nav_code: str = "166009") -> 
             "columns": list(split_df.columns),
             "required_columns_present": all(col in split_df.columns for col in ["年份", "拆分折算日", "拆分类型", "拆分折算比例"]),
             "missing_required": [col for col in ["年份", "拆分折算日", "拆分类型", "拆分折算比例"] if col not in split_df.columns],
+        },
+        "fund_open_fund_cum_return_em": {
+            "rows": int(len(cum_return_df)),
+            "columns": list(cum_return_df.columns),
+            "required_columns_present": all(col in cum_return_df.columns for col in ["日期", "累计收益率"]),
+            "missing_required": [col for col in ["日期", "累计收益率"] if col not in cum_return_df.columns],
         },
         "fund_announcement_personnel_em": {
             "rows": int(len(personnel_df)),
@@ -490,6 +498,7 @@ def _run_step_fund_info_serial(
     retry_cfg: RetryConfig,
     progress_cfg: ProgressConfig,
     indicator: str,
+    period: str | None,
     stage_name: str,
     normalize_fn: Callable[[pd.DataFrame, str], pd.DataFrame],
     only_codes: Sequence[str] | None,
@@ -516,7 +525,11 @@ def _run_step_fund_info_serial(
         processed += 1
         try:
             raw_df = _with_retry(
-                lambda c=code, ind=indicator: ak.fund_open_fund_info_em(symbol=c, indicator=ind),
+                (
+                    lambda c=code, ind=indicator, p=period: ak.fund_open_fund_info_em(symbol=c, indicator=ind, period=p)
+                    if p
+                    else ak.fund_open_fund_info_em(symbol=c, indicator=ind)
+                ),
                 retry_cfg,
                 code,
                 stage_name,
@@ -576,6 +589,7 @@ def run_step4_bonus(
         retry_cfg=retry_cfg,
         progress_cfg=progress_cfg,
         indicator="分红送配详情",
+        period=None,
         stage_name="step4_bonus",
         normalize_fn=_normalize_bonus,
         only_codes=only_codes,
@@ -598,6 +612,7 @@ def run_step5_split(
         retry_cfg=retry_cfg,
         progress_cfg=progress_cfg,
         indicator="拆分详情",
+        period=None,
         stage_name="step5_split",
         normalize_fn=_normalize_split,
         only_codes=only_codes,
@@ -690,6 +705,42 @@ def run_step6_personnel(
     }
 
 
+def _normalize_cum_return(df: pd.DataFrame, code: str) -> pd.DataFrame:
+    out = df.copy()
+    for col in ["日期", "累计收益率"]:
+        if col not in out.columns:
+            out[col] = ""
+    out = out[["日期", "累计收益率"]].copy()
+    out.insert(0, "基金代码", _safe_str_code(code))
+    out["日期"] = pd.to_datetime(out["日期"], errors="coerce").dt.strftime("%Y-%m-%d")
+    out["累计收益率"] = pd.to_numeric(out["累计收益率"], errors="coerce")
+    out = out.dropna(subset=["日期", "累计收益率"])
+    return out[CUM_RETURN_COLUMNS]
+
+
+def run_step7_cum_return(
+    purchase_csv: Path,
+    cum_return_dir: Path,
+    fail_log: Path,
+    retry_cfg: RetryConfig,
+    progress_cfg: ProgressConfig | None = None,
+    only_codes: Sequence[str] | None = None,
+) -> dict:
+    progress_cfg = progress_cfg or ProgressConfig()
+    return _run_step_fund_info_serial(
+        purchase_csv=purchase_csv,
+        out_dir=cum_return_dir,
+        fail_log=fail_log,
+        retry_cfg=retry_cfg,
+        progress_cfg=progress_cfg,
+        indicator="累计收益率走势",
+        period="成立来",
+        stage_name="step7_cum_return",
+        normalize_fn=_normalize_cum_return,
+        only_codes=only_codes,
+    )
+
+
 def _load_failed_codes(log_paths: Iterable[Path], stage: str) -> list[str]:
     failed: set[str] = set()
     for path in log_paths:
@@ -717,12 +768,14 @@ def _default_paths(base_dir: Path) -> dict[str, Path]:
         "bonus_dir": base_dir / "fund_bonus_by_code",
         "split_dir": base_dir / "fund_split_by_code",
         "personnel_dir": base_dir / "fund_personnel_by_code",
+        "cum_return_dir": base_dir / "fund_cum_return_by_code",
         "verify_json": base_dir / "verify_report.json",
         "fail_overview_log": base_dir / "failed_overview.jsonl",
         "fail_nav_log": base_dir / "failed_nav.jsonl",
         "fail_bonus_log": base_dir / "failed_bonus.jsonl",
         "fail_split_log": base_dir / "failed_split.jsonl",
         "fail_personnel_log": base_dir / "failed_personnel.jsonl",
+        "fail_cum_return_log": base_dir / "failed_cum_return.jsonl",
     }
 
 
@@ -739,12 +792,14 @@ def main() -> None:
             "step4",
             "step5",
             "step6",
+            "step7",
             "verify",
             "retry-overview",
             "retry-nav",
             "retry-bonus",
             "retry-split",
             "retry-personnel",
+            "retry-cum-return",
             "retry-all",
         ],
         default="all",
@@ -823,6 +878,16 @@ def main() -> None:
         )
         print(f"[step6] {summary}")
 
+    if args.mode in {"step7", "all"}:
+        summary = run_step7_cum_return(
+            purchase_csv=paths["purchase_csv"],
+            cum_return_dir=paths["cum_return_dir"],
+            fail_log=paths["fail_cum_return_log"],
+            retry_cfg=retry_cfg,
+            progress_cfg=progress_cfg,
+        )
+        print(f"[step7] {summary}")
+
     if args.mode in {"retry-overview", "retry-all"}:
         failed_codes = _load_failed_codes([paths["fail_overview_log"]], stage="step2_overview")
         summary = run_step2_overview(
@@ -884,6 +949,18 @@ def main() -> None:
             only_codes=failed_codes,
         )
         print(f"[retry-personnel] failed_codes={len(failed_codes)} summary={summary}")
+
+    if args.mode in {"retry-cum-return", "retry-all"}:
+        failed_codes = _load_failed_codes([paths["fail_cum_return_log"]], stage="step7_cum_return")
+        summary = run_step7_cum_return(
+            purchase_csv=paths["purchase_csv"],
+            cum_return_dir=paths["cum_return_dir"],
+            fail_log=paths["fail_cum_return_log"],
+            retry_cfg=retry_cfg,
+            progress_cfg=progress_cfg,
+            only_codes=failed_codes,
+        )
+        print(f"[retry-cum-return] failed_codes={len(failed_codes)} summary={summary}")
 
 
 if __name__ == "__main__":

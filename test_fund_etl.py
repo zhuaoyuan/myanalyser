@@ -17,6 +17,7 @@ from fund_etl import (
     run_step4_bonus,
     run_step5_split,
     run_step6_personnel,
+    run_step7_cum_return,
     verify_interfaces,
 )
 
@@ -39,11 +40,12 @@ class FundEtlTest(unittest.TestCase):
         nav_df = pd.DataFrame(columns=["净值日期", "单位净值", "日增长率"])
         bonus_df = pd.DataFrame(columns=["年份", "权益登记日", "除息日", "每份分红", "分红发放日"])
         split_df = pd.DataFrame(columns=["年份", "拆分折算日", "拆分类型", "拆分折算比例"])
+        cum_return_df = pd.DataFrame(columns=["日期", "累计收益率"])
         personnel_df = pd.DataFrame(columns=["基金代码", "公告标题", "基金名称", "公告日期", "报告ID"])
 
         with patch("fund_etl.ak.fund_purchase_em", return_value=purchase_df), patch(
             "fund_etl.ak.fund_overview_em", return_value=overview_df
-        ), patch("fund_etl.ak.fund_open_fund_info_em", side_effect=[nav_df, bonus_df, split_df]), patch(
+        ), patch("fund_etl.ak.fund_open_fund_info_em", side_effect=[nav_df, bonus_df, split_df, cum_return_df]), patch(
             "fund_etl.ak.fund_announcement_personnel_em", return_value=personnel_df
         ):
             report = verify_interfaces(sample_code="000001", nav_code="000001")
@@ -371,6 +373,44 @@ class FundEtlTest(unittest.TestCase):
             self.assertEqual(summary["failed"], 0)
             self.assertFalse(fail_log.exists())
 
+    def test_step7_cum_return_write_rows(self) -> None:
+        purchase = pd.DataFrame([{"基金代码": "000014"}])
+        cum_return = pd.DataFrame(
+            [
+                {"日期": "2024-01-01", "累计收益率": 1.2},
+                {"日期": "2024-01-02", "累计收益率": 1.5},
+            ]
+        )
+
+        def cum_return_side_effect(symbol: str, indicator: str, period: str) -> pd.DataFrame:
+            self.assertEqual(symbol, "000014")
+            self.assertEqual(indicator, "累计收益率走势")
+            self.assertEqual(period, "成立来")
+            return cum_return
+
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            purchase_csv = base / "purchase.csv"
+            cum_return_dir = base / "cum_return"
+            fail_log = base / "failed_cum_return.jsonl"
+            purchase.to_csv(purchase_csv, index=False, encoding="utf-8-sig")
+
+            with patch("fund_etl.ak.fund_open_fund_info_em", side_effect=cum_return_side_effect):
+                summary = run_step7_cum_return(
+                    purchase_csv=purchase_csv,
+                    cum_return_dir=cum_return_dir,
+                    fail_log=fail_log,
+                    retry_cfg=RetryConfig(max_retries=1, retry_sleep_seconds=0),
+                )
+
+            out = cum_return_dir / "000014.csv"
+            self.assertTrue(out.exists())
+            written = pd.read_csv(out, dtype={"基金代码": str})
+            self.assertEqual(written.columns.tolist(), ["基金代码", "日期", "累计收益率"])
+            self.assertEqual(len(written), 2)
+            self.assertEqual(summary["rows_written"], 2)
+            self.assertFalse(fail_log.exists())
+
     def test_closed_loop_all_steps(self) -> None:
         purchase_raw = pd.DataFrame(
             [
@@ -393,6 +433,7 @@ class FundEtlTest(unittest.TestCase):
         personnel = pd.DataFrame(
             [{"基金代码": "000001", "公告标题": "基金经理调整公告", "基金名称": "A基金", "公告日期": "2024-01-01", "报告ID": "AN1"}]
         )
+        cum_return = pd.DataFrame([{"日期": "2024-01-01", "累计收益率": 1.2}])
 
         with tempfile.TemporaryDirectory() as d:
             base = Path(d)
@@ -404,6 +445,7 @@ class FundEtlTest(unittest.TestCase):
             fail_bonus = base / "failed_bonus.jsonl"
             fail_split = base / "failed_split.jsonl"
             fail_personnel = base / "failed_personnel.jsonl"
+            fail_cum_return = base / "failed_cum_return.jsonl"
 
             with patch("fund_etl.ak.fund_purchase_em", return_value=purchase_raw):
                 step1_df = run_step1_purchase(purchase_csv)
@@ -470,6 +512,18 @@ class FundEtlTest(unittest.TestCase):
             self.assertEqual(step6["fetched"], 1)
             self.assertTrue((base / "personnel" / "000001.csv").exists())
             self.assertFalse(fail_personnel.exists())
+
+            with patch("fund_etl.ak.fund_open_fund_info_em", return_value=cum_return):
+                step7 = run_step7_cum_return(
+                    purchase_csv=purchase_csv,
+                    cum_return_dir=base / "cum_return",
+                    fail_log=fail_cum_return,
+                    retry_cfg=RetryConfig(max_retries=1, retry_sleep_seconds=0),
+                    progress_cfg=ProgressConfig(print_interval_seconds=999),
+                )
+            self.assertEqual(step7["fetched"], 1)
+            self.assertTrue((base / "cum_return" / "000001.csv").exists())
+            self.assertFalse(fail_cum_return.exists())
 
 
 if __name__ == "__main__":

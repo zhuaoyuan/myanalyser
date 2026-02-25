@@ -27,7 +27,7 @@ import akshare as ak
 fund_open_fund_info_em_df = ak.fund_open_fund_info_em(symbol="161606", indicator="分红送配详情")
 print(fund_open_fund_info_em_df)
 
-fund_open_fund_info_em_df = ak.fund_open_fund_info_em(symbol="163402", indicator="分红送配详情")
+fund_open_fund_info_em_df = ak.fund_open_fund_info_em(symbol="000084", indicator="分红送配详情")
 print(fund_open_fund_info_em_df)
 #        年份       权益登记日         除息日          每份分红       分红发放日
 # 0   2021年  2021-12-16  2021-12-16  每份派现金0.1584元  2021-12-20
@@ -83,3 +83,17 @@ print(fund_announcement_personnel_em_df)
 # 9   000001    华夏基金管理有限公司关于增聘华夏成长证券投资基金基金经理的公告  华夏成长混合  2021-09-18  AN202109181516930266
 # 10  000001    华夏基金管理有限公司关于调整华夏成长证券投资基金基金经理的公告  华夏成长混合  2022-04-13  AN202204131558964253
 # 11  000001    华夏基金管理有限公司关于调整华夏成长证券投资基金基金经理的公告  华夏成长混合  2022-10-29  AN202210291579611414
+
+
+
+fund_open_fund_info_em_df = ak.fund_open_fund_info_em(symbol="000141", indicator="累计收益率走势", period="成立来")
+print(fund_open_fund_info_em_df)
+#              日期   累计收益率
+# 0    2019-03-19    0.00
+# 1    2019-04-02    0.06
+# 2    2019-04-15    0.23
+# 3    2019-04-25    0.20
+# 4    2019-05-10   -1.68
+# ..          ...     ...
+# 207  2026-01-09  213.27
+# 208  2026-01-21  229.22

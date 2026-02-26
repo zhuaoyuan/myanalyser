@@ -103,7 +103,13 @@
 # - 断言 summary 非空、details 目录存在。
 # - 业务意义：交叉校验两条独立来源/口径的收益信息是否相互印证。
 
-# ### Step 10/10：评分榜入库 + 回测
+# ### Step 9.5/10：按 Step 9 结果过滤基金清单
+#
+# - 执行 `filter_funds_for_next_step.py`，综合 overview/nav/adjusted_nav、收益比对明细、交易日完整性明细打标过滤。
+# - 产出过滤结果 CSV，并生成仅保留“不过滤”基金的 `fund_purchase_for_step10_filtered.csv`。
+# - 业务意义：把质量约束前置到入库和回测前，避免明显异常基金进入后续策略链路。
+#
+# ### Step 10/10：评分榜入库 + 回测（消费过滤后清单）
 
 # - 先扫描 `fund_adjusted_nav_by_code` 自动计算 `AS_OF_DATE`（最大净值日期）。
 # - 运行 `pipeline_scoreboard.py`：
@@ -181,6 +187,10 @@ SCOREBOARD_DIR="${ARTIFACTS_DIR}/scoreboard"
 BACKTEST_DIR="${ARTIFACTS_DIR}/backtest"
 MYSQL_DDL="${DB_INFRA_DIR}/sql/mysql_schema.sql"
 CLICKHOUSE_DDL="${DB_INFRA_DIR}/sql/clickhouse_schema.sql"
+FILTER_START_DATE="${FILTER_START_DATE:-2023-01-01}"
+FILTER_MAX_ABS_DEVIATION="${FILTER_MAX_ABS_DEVIATION:-0.02}"
+FILTER_RESULT_CSV="${ARTIFACTS_DIR}/filtered_fund_candidates.csv"
+FILTERED_PURCHASE_CSV="${FUND_ETL_DIR}/fund_purchase_for_step10_filtered.csv"
 
 assert_file_exists() {
   local path="$1"
@@ -385,6 +395,48 @@ echo "[verify] step 9/10: compare adjusted nav vs cum return"
 assert_csv_has_rows "${ARTIFACTS_DIR}/fund_return_compare/summary.csv"
 assert_dir_exists "${ARTIFACTS_DIR}/fund_return_compare/details"
 
+echo "[verify] step 9.5/10: filter fund list for next step"
+"${PYTHON_BIN}" src/filter_funds_for_next_step.py \
+  --base-dir "${FUND_ETL_DIR}" \
+  --compare-details-dir "${ARTIFACTS_DIR}/fund_return_compare/details" \
+  --integrity-details-dir "${ARTIFACTS_DIR}/trade_day_integrity_reports/details_2025-01-01_2025-12-31" \
+  --start-date "${FILTER_START_DATE}" \
+  --max-abs-deviation "${FILTER_MAX_ABS_DEVIATION}" \
+  --output-csv "${FILTER_RESULT_CSV}"
+assert_csv_has_rows "${FILTER_RESULT_CSV}"
+
+"${PYTHON_BIN}" - <<'PY' "${FUND_ETL_DIR}/fund_purchase.csv" "${FILTER_RESULT_CSV}" "${FILTERED_PURCHASE_CSV}"
+from pathlib import Path
+import sys
+
+import pandas as pd
+
+purchase_csv = Path(sys.argv[1])
+filter_csv = Path(sys.argv[2])
+output_csv = Path(sys.argv[3])
+
+purchase_df = pd.read_csv(purchase_csv, dtype={"基金代码": str}, encoding="utf-8-sig")
+filter_df = pd.read_csv(filter_csv, dtype={"基金编码": str}, encoding="utf-8-sig")
+
+if "基金代码" not in purchase_df.columns:
+    raise ValueError(f"missing 基金代码 column: {purchase_csv}")
+if "基金编码" not in filter_df.columns or "是否过滤" not in filter_df.columns:
+    raise ValueError(f"missing 基金编码/是否过滤 columns: {filter_csv}")
+
+purchase_df["基金代码"] = purchase_df["基金代码"].map(lambda v: str(v).strip().zfill(6))
+filter_df["基金编码"] = filter_df["基金编码"].map(lambda v: str(v).strip().zfill(6))
+
+kept_codes = set(filter_df.loc[filter_df["是否过滤"] == "否", "基金编码"].dropna().tolist())
+kept_df = purchase_df[purchase_df["基金代码"].isin(kept_codes)].copy()
+if kept_df.empty:
+    raise ValueError("all funds are filtered out; cannot continue step10 pipeline")
+
+kept_df.to_csv(output_csv, index=False, encoding="utf-8-sig")
+print(f"filtered_purchase_rows={len(kept_df)}")
+print(f"filtered_purchase_csv={output_csv}")
+PY
+assert_csv_has_rows "${FILTERED_PURCHASE_CSV}"
+
 echo "[verify] step 10/10: pipeline scoreboard -> db + backtest"
 AS_OF_DATE="$("${PYTHON_BIN}" - <<'PY' "${FUND_ETL_DIR}/fund_adjusted_nav_by_code"
 from pathlib import Path
@@ -414,7 +466,7 @@ PY
 )"
 
 "${PYTHON_BIN}" src/pipeline_scoreboard.py \
-  --purchase-csv "${FUND_ETL_DIR}/fund_purchase.csv" \
+  --purchase-csv "${FILTERED_PURCHASE_CSV}" \
   --overview-csv "${FUND_ETL_DIR}/fund_overview.csv" \
   --personnel-dir "${FUND_ETL_DIR}/fund_personnel_by_code" \
   --nav-dir "${FUND_ETL_DIR}/fund_adjusted_nav_by_code" \

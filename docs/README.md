@@ -99,15 +99,18 @@ pip install akshare pandas numpy pymysql
 
 数据库联调需本地可用 Docker（用于 `fund_db_infra` 的 MySQL + ClickHouse）。
 
-## 统一验收命令
+## 两类全流程脚本
 
-项目提供统一验收脚本 `tools/verify.sh`，用于执行端到端闭环验收（含数据库）：
+### 1) 验收跑（`tools/verify.sh`）
+
+用于代码和流程回归验收，重点是“快而全地证明链路可用”。
 
 - 单测回归（`tests/test_*.py`）
 - 核心 CLI smoke（`fund_etl`、`pipeline_scoreboard`、`backtest_portfolio`、`compare_adjusted_nav_and_cum_return`、`check_trade_day_data_integrity`）
 - 启动 `fund_db_infra`（MySQL + ClickHouse）
 - ETL 抽样数据链路（step1~step7，抽样 101 只：前 100 + `163402`）
 - 复权净值计算、交易日完整性检查、复权收益率一致性比对
+- Step 9.5 基金过滤（过滤结果会用于后续评分与回测）
 - 评分榜单入库与导出、回测报告生成
 
 ```bash
@@ -134,3 +137,39 @@ RUN_ID=20260226_220000_verify DATA_VERSION=20260226_verify_db bash tools/verify.
 - `data/versions/{RUN_ID}/logs`
 - `artifacts/verify_{RUN_ID}/scoreboard`
 - `artifacts/verify_{RUN_ID}/backtest`
+
+### 2) 正式跑（`tools/run_full_pipeline.sh`）
+
+用于真实生产/正式跑数，重点是“全量数据 + 全链路落库 + 可配置时间窗口”。
+
+- 不跑单测和 CLI smoke，不做 101 抽样，直接全量 ETL（`fund_etl --mode all`）
+- 包含交易日完整性检查、复权收益率一致性比对、Step 9.5 过滤
+- 评分流程直接消费过滤后的 `fund_purchase_for_step10_filtered.csv`
+- 支持同 `RUN_ID` 断点续跑：各步骤成功后写 checkpoint，再次运行时优先复用已完成产物
+- 不包含 backtest（回测部分建议独立执行）
+
+```bash
+cd /Users/zhuaoyuan/cursor-workspace/finance/myanalyser
+source /Users/zhuaoyuan/cursor-workspace/finance/myanalyser/.venv312/bin/activate
+bash tools/run_full_pipeline.sh
+```
+
+常用参数通过环境变量传入：
+
+```bash
+RUN_ID=20260226_230000_formal \
+DATA_VERSION=20260226_formal_db \
+INTEGRITY_START_DATE=2015-01-01 \
+INTEGRITY_END_DATE=2025-12-31 \
+FILTER_START_DATE=2023-01-01 \
+FILTER_MAX_ABS_DEVIATION=0.02 \
+bash tools/run_full_pipeline.sh
+```
+
+主要产物位置：
+
+- `data/versions/{RUN_ID}/fund_etl`
+- `data/versions/{RUN_ID}/logs`
+- `artifacts/full_run_{RUN_ID}/filtered_fund_candidates.csv`
+- `artifacts/full_run_{RUN_ID}/scoreboard`
+- `artifacts/full_run_{RUN_ID}/.checkpoints`（步骤完成标记，用于断点续跑）

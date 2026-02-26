@@ -1,4 +1,152 @@
 #!/usr/bin/env bash
+
+# `myanalyser/tools/verify.sh` 当前是一个**端到端验收脚本**，目标是把“数据抓取→清洗校验→入库→策略回测”整条链路跑一遍，并在关键节点做可执行断言。下面按流程拆开。
+
+# ## 整体定位
+
+# - 这是一个 10 步串行流水线，失败即退出（`set -euo pipefail`）。
+# - 核心产物分三类：
+#   - 数据版本目录：`data/versions/${RUN_ID}`
+#   - 验收产物目录：`artifacts/verify_${RUN_ID}`
+#   - 数据库落库结果（MySQL + ClickHouse）
+# - 设计思路是：
+#   - 先验证代码可用（单测 + CLI 冒烟）
+#   - 再验证外部依赖可用（Docker DB）
+#   - 再验证数据可用（ETL + 各种 CSV 断言）
+#   - 最后验证业务可用（评分榜入库 + 回测输出）
+
+# ---
+
+# ## 脚本启动与公共准备
+
+# ### 1) 路径和环境约定
+
+# - `PROJECT_ROOT` 指向 `myanalyser`，`WORKSPACE_ROOT` 指向上层 `finance`。
+# - 数据库基础设施固定用 `fund_db_infra/docker-compose.yml`。
+# - 若未激活虚拟环境，只给 warning，不强制失败（可跑，但存在依赖版本漂移风险）。
+
+# ### 2) Python 和运行参数
+
+# - 自动选 `python` 或 `python3`，都没有就失败退出。
+# - 默认变量：
+#   - `RUN_ID`: `YYYYMMDD_HHMMSS_verify_e2e`
+#   - `DATA_VERSION`: `${RUN_ID}_db`
+# - 关键目录：
+#   - `FUND_ETL_DIR`: `data/versions/${RUN_ID}/fund_etl`
+#   - `LOGS_DIR`: `data/versions/${RUN_ID}/logs`
+#   - `ARTIFACTS_DIR`: `artifacts/verify_${RUN_ID}`
+
+# ### 3) 内置断言函数
+
+# - `assert_file_exists` / `assert_dir_exists`
+# - `assert_csv_has_rows`: 用 pandas 读 CSV，要求非空
+# - `assert_dir_has_csv`: 目录至少有一个 CSV
+# - `wait_mysql_ready` / `wait_clickhouse_ready`: 最长等待 120s
+
+# ---
+
+# ## 10 步执行流程（业务视角）
+
+# ### Step 1/10：单元测试
+
+# - 执行 `tests/test_*.py` 全量单测。
+# - 业务意义：先守住函数级/模块级正确性，避免后续长链路浪费时间。
+
+# ### Step 2/10：核心 CLI 冒烟（5 个）
+
+# - 指定执行 5 个关键 CLI 集成测试（fund_etl/pipeline/backtest/compare/integrity）。
+# - 业务意义：确认“最关键入口命令”在当前代码状态能启动并跑通基础流程。
+
+# ### Step 3/10：启动数据库基础设施
+
+# - 启动 `fund_db_infra` 的 docker compose。
+# - 等待 MySQL / ClickHouse readiness。
+# - 业务意义：后续 scoreboard 入库和回测选基依赖 DB，可提前暴露环境问题。
+
+# ### Step 4/10：fund_etl 接口探测 + step1 全量清单
+
+# - 执行 `fund_etl.py --mode verify`（接口列结构检查报告）
+# - 执行 `fund_etl.py --mode step1`（抓基金购买清单）
+# - 断言 `fund_purchase.csv` 存在且有行。
+# - 业务意义：确认上游数据接口可用、字段没明显漂移。
+
+# ### Step 5/10：抽样 101 只基金（Top100 + 163402）
+
+# - 从 step1 输出中抽样：
+#   - 先取不含 `163402` 的前 100
+#   - 再补 1 条 `163402`（若不存在则构造空白占位）
+# - 覆盖回写 `fund_purchase.csv`，强制后续 ETL 只跑样本集。
+# - 业务意义：控制验收时长，同时保留一个指定目标基金用于回归对比。
+
+# ### Step 6/10：对样本跑 step2~step7
+
+# - 依次执行 ETL 各明细步骤：overview/nav/bonus/split/personnel/cum_return。
+# - 对产物做存在性断言（overview 非空，分目录有 CSV）。
+# - 业务意义：验证各业务主题数据都能拉取并落盘。
+
+# ### Step 7/10：计算复权净值
+
+# - `adjusted_nav_tool.py` 基于 nav + 分红 + 拆分计算复权净值。
+# - 使用 `--allow-missing-event-until 2020-12-31`，并记录失败日志。
+# - 断言复权目录有 CSV。
+# - 业务意义：把原始净值转成可用于收益比较/回测的统一口径序列。
+
+# ### Step 8/10：交易日完整性检查（2025 全年）
+
+# - 对 ETL 数据做交易日覆盖检查，输出完整性报告目录。
+# - 自动抓第一份 summary CSV 并断言非空。
+# - 业务意义：检查时序数据是否缺日/断档，避免策略结果失真。
+
+# ### Step 9/10：复权净值 vs 累计收益率 对比
+
+# - 执行一致性比较，输出 `summary.csv` + `details/`。
+# - 断言 summary 非空、details 目录存在。
+# - 业务意义：交叉校验两条独立来源/口径的收益信息是否相互印证。
+
+# ### Step 10/10：评分榜入库 + 回测
+
+# - 先扫描 `fund_adjusted_nav_by_code` 自动计算 `AS_OF_DATE`（最大净值日期）。
+# - 运行 `pipeline_scoreboard.py`：
+#   - 生成评分榜 CSV
+#   - 连接 MySQL/ClickHouse
+#   - `--apply-ddl` 自动建表
+#   - 将当前 `DATA_VERSION` 数据入库
+# - 再运行 `backtest_portfolio.py`：
+#   - 2025 年区间
+#   - 固定规则 `verify_e2e_top5`
+#   - 从 ClickHouse 取选基和净值
+# - 断言回测明细与报告文件存在。
+# - 业务意义：验证“数据生产→入库→策略消费→结果输出”闭环可用。
+
+# ---
+
+# ## 关键输入/输出关系（便于审计）
+
+# - 输入依赖：
+#   - AkShare 接口（fund_etl 各步骤）
+#   - Docker + MySQL + ClickHouse
+#   - `fund_db_infra/sql/*.sql`
+#   - `data/common/trade_dates.csv`
+# - 关键输出：
+#   - `fund_etl/fund_purchase.csv`, `fund_overview.csv`, 各 `*_by_code/*.csv`
+#   - `fund_adjusted_nav_by_code/*.csv`
+#   - `artifacts/verify_${RUN_ID}/trade_day_integrity_reports/*`
+#   - `artifacts/verify_${RUN_ID}/fund_return_compare/*`
+#   - `artifacts/verify_${RUN_ID}/scoreboard/fund_scoreboard_${DATA_VERSION}.csv`
+#   - `artifacts/verify_${RUN_ID}/backtest/backtest_report.md`
+
+# ---
+
+# ## 从“业务合理性”看当前脚本的优点
+
+# - 覆盖面完整：接口、数据、质量、入库、消费全链路都覆盖。
+# - 有明确断言：不是只跑命令，而是对关键产物做非空/存在检查。
+# - 有可追溯版本：`RUN_ID` + `DATA_VERSION` 将验收数据和业务版本绑定。
+# - 有交叉验证：`adjusted_nav` 与 `cum_return` 的一致性检查是很实用的业务约束。
+
+# ---
+
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

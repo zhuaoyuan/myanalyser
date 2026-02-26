@@ -12,6 +12,8 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
+from project_paths import project_root
+
 
 @dataclass
 class Window:
@@ -568,8 +570,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", required=True, type=Path, help="输出目录")
     parser.add_argument(
         "--trade-dates-csv",
-        default=str(Path(__file__).resolve().parent / "trade_dates.csv"),
-        help="交易日历CSV，默认 myanalyser/trade_dates.csv",
+        default=str(project_root() / "data" / "common" / "trade_dates.csv"),
+        help="交易日历CSV，默认 data/common/trade_dates.csv",
     )
 
     parser.add_argument("--rebalance-interval-days", type=int, default=15, help="窗口间隔天数")

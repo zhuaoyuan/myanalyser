@@ -10,7 +10,7 @@ import pandas as pd
 
 import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from backtest_portfolio import _assign_selection_versions, _build_windows, run_backtest
 

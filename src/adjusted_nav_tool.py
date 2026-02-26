@@ -175,12 +175,13 @@ def process_all_funds(
     bonus_dir: Path,
     split_dir: Path,
     output_dir: Path,
+    fail_log_path: Path | None = None,
     codes: list[str] | None = None,
     progress_interval_seconds: float = 5.0,
     allow_missing_event_until: pd.Timestamp | None = None,
 ) -> dict[str, object]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    fail_log = output_dir / "failed_adjusted_nav.jsonl"
+    fail_log = fail_log_path or (output_dir / "failed_adjusted_nav.jsonl")
     nav_files = sorted(nav_dir.glob("*.csv"))
     if codes:
         wanted = {_safe_code(code) for code in codes}
@@ -263,6 +264,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Allow missing dividend/split event dates on or before this date (YYYY-MM-DD)",
     )
+    parser.add_argument(
+        "--fail-log",
+        type=Path,
+        default=None,
+        help="Optional failure log JSONL path (default: {output-dir}/failed_adjusted_nav.jsonl)",
+    )
     return parser
 
 
@@ -279,6 +286,7 @@ def main() -> None:
         bonus_dir=args.bonus_dir,
         split_dir=args.split_dir,
         output_dir=args.output_dir,
+        fail_log_path=args.fail_log,
         codes=args.codes,
         progress_interval_seconds=args.progress_interval_seconds,
         allow_missing_event_until=allow_missing_event_until,

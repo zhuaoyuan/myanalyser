@@ -831,166 +831,187 @@ def run_pipeline(args: argparse.Namespace) -> None:
     exclusion_detail.to_csv(exclusion_detail_csv, index=False, encoding="utf-8-sig")
     exclusion_summary.to_csv(exclusion_summary_csv, index=False, encoding="utf-8-sig")
 
-    db = DbConfig(
-        mysql_host=args.mysql_host,
-        mysql_port=args.mysql_port,
-        mysql_user=args.mysql_user,
-        mysql_password=args.mysql_password,
-        mysql_db=args.mysql_db,
-        clickhouse_host=args.clickhouse_host,
-        clickhouse_port=args.clickhouse_port,
-        clickhouse_user=args.clickhouse_user,
-        clickhouse_password=args.clickhouse_password,
-        clickhouse_db=args.clickhouse_db,
-    )
-
-    if args.apply_ddl:
-        apply_mysql_schema(db, args.mysql_ddl)
-        apply_clickhouse_schema(db, args.clickhouse_ddl)
-
-    # write mysql
-    mysql_conn = pymysql.connect(
-        host=db.mysql_host,
-        port=db.mysql_port,
-        user=db.mysql_user,
-        password=db.mysql_password,
-        database=db.mysql_db,
-        autocommit=True,
-        charset="utf8mb4",
-        local_infile=True,
-    )
-    try:
-        with mysql_conn.cursor() as cur:
-            cur.execute("DELETE FROM dim_fund_base WHERE data_version=%s", (args.data_version,))
-            cur.execute("DELETE FROM dim_fund_exclusion_detail WHERE data_version=%s", (args.data_version,))
-            cur.execute("DELETE FROM dim_fund_exclusion_summary WHERE data_version=%s", (args.data_version,))
-
-            base_cols = [
-                "data_version",
-                "as_of_date",
-                "fund_code",
-                "fund_name",
-                "fund_full_name",
-                "fund_type",
-                "inception_date",
-                "inception_years",
-                "scale_billion",
-                "subscribe_status",
-                "redeem_status",
-                "next_open_day",
-                "purchase_min_amount",
-                "daily_limit_amount",
-                "management_fee_rate",
-                "custodian_fee_rate",
-                "sales_service_fee_rate",
-                "max_subscribe_fee_rate",
-                "purchase_fee_rate",
-                "fee_source_max_subscribe",
-                "fee_source_purchase",
-                "last_updated_date",
-                "last_personnel_change_date",
-            ]
-            if not dim_base.empty:
-                sql = (
-                    "INSERT INTO dim_fund_base ("
-                    + ",".join(base_cols)
-                    + ") VALUES ("
-                    + ",".join(["%s"] * len(base_cols))
-                    + ")"
-                )
-                cur.executemany(sql, _to_records(dim_base, base_cols))
-
-            if not exclusion_detail.empty:
-                detail_cols = ["data_version", "as_of_date", "fund_code", "reason_code", "reason_detail"]
-                sql = (
-                    "INSERT INTO dim_fund_exclusion_detail ("
-                    + ",".join(detail_cols)
-                    + ") VALUES ("
-                    + ",".join(["%s"] * len(detail_cols))
-                    + ")"
-                )
-                cur.executemany(sql, _to_records(exclusion_detail, detail_cols))
-
-            if not exclusion_summary.empty:
-                summary_cols = ["data_version", "as_of_date", "reason_code", "fund_count"]
-                sql = (
-                    "INSERT INTO dim_fund_exclusion_summary ("
-                    + ",".join(summary_cols)
-                    + ") VALUES ("
-                    + ",".join(["%s"] * len(summary_cols))
-                    + ")"
-                )
-                cur.executemany(sql, _to_records(exclusion_summary, summary_cols))
-    finally:
-        mysql_conn.close()
-
-    # write clickhouse
-    _run_clickhouse_query_via_docker(
-        f"ALTER TABLE {db.clickhouse_db}.fact_fund_nav_daily DELETE WHERE data_version = '{args.data_version}'",
-        args.clickhouse_container,
-    )
-    _run_clickhouse_query_via_docker(
-        f"ALTER TABLE {db.clickhouse_db}.fact_fund_return_period DELETE WHERE data_version = '{args.data_version}'",
-        args.clickhouse_container,
-    )
-    _run_clickhouse_query_via_docker(
-        f"ALTER TABLE {db.clickhouse_db}.fact_fund_metrics_snapshot DELETE WHERE data_version = '{args.data_version}'",
-        args.clickhouse_container,
-    )
-    _run_clickhouse_query_via_docker(
-        f"ALTER TABLE {db.clickhouse_db}.fact_fund_scoreboard_snapshot DELETE WHERE data_version = '{args.data_version}'",
-        args.clickhouse_container,
-    )
-
-    if not nav_df.empty:
-        nav_df = nav_df.copy()
-        nav_df.insert(0, "data_version", args.data_version)
-        nav_df.insert(1, "as_of_date", as_of.date())
-        _insert_clickhouse_csv(
-            nav_df,
-            f"{db.clickhouse_db}.fact_fund_nav_daily",
-            ["data_version", "as_of_date", "fund_code", "nav_date", "unit_nav", "adjusted_nav", "daily_return", "latest_nav_date"],
-            args.clickhouse_container,
-            partition_group_cols=["nav_date"],
+    if not args.skip_sinks:
+        db = DbConfig(
+            mysql_host=args.mysql_host,
+            mysql_port=args.mysql_port,
+            mysql_user=args.mysql_user,
+            mysql_password=args.mysql_password,
+            mysql_db=args.mysql_db,
+            clickhouse_host=args.clickhouse_host,
+            clickhouse_port=args.clickhouse_port,
+            clickhouse_user=args.clickhouse_user,
+            clickhouse_password=args.clickhouse_password,
+            clickhouse_db=args.clickhouse_db,
         )
 
-    if not period_df.empty:
-        period_df = period_df.copy()
-        period_df.insert(0, "data_version", args.data_version)
-        period_df.insert(1, "as_of_date", as_of.date())
-        _insert_clickhouse_csv(
-            period_df,
-            f"{db.clickhouse_db}.fact_fund_return_period",
-            ["data_version", "as_of_date", "fund_code", "period_type", "period_key", "period_start", "period_end", "period_return"],
-            args.clickhouse_container,
-            partition_group_cols=["period_type", "period_end"],
-        )
+        if args.apply_ddl:
+            apply_mysql_schema(db, args.mysql_ddl)
+            apply_clickhouse_schema(db, args.clickhouse_ddl)
 
-    if not metric_df.empty:
-        metric_insert = metric_df[metric_df["stale_nav_excluded"] == False].copy()
-        metric_insert = metric_insert.drop(columns=["stale_nav_excluded"])
-        metric_insert.insert(0, "data_version", args.data_version)
-        metric_insert.insert(1, "as_of_date", as_of.date())
-        for col in CH_METRICS_COLS:
-            if col not in metric_insert.columns:
-                metric_insert[col] = None
-        _insert_clickhouse_csv(
-            metric_insert,
-            f"{db.clickhouse_db}.fact_fund_metrics_snapshot",
-            CH_METRICS_COLS,
+        # write mysql
+        mysql_conn = pymysql.connect(
+            host=db.mysql_host,
+            port=db.mysql_port,
+            user=db.mysql_user,
+            password=db.mysql_password,
+            database=db.mysql_db,
+            autocommit=True,
+            charset="utf8mb4",
+            local_infile=True,
+        )
+        try:
+            with mysql_conn.cursor() as cur:
+                cur.execute("DELETE FROM dim_fund_base WHERE data_version=%s", (args.data_version,))
+                cur.execute("DELETE FROM dim_fund_exclusion_detail WHERE data_version=%s", (args.data_version,))
+                cur.execute("DELETE FROM dim_fund_exclusion_summary WHERE data_version=%s", (args.data_version,))
+
+                base_cols = [
+                    "data_version",
+                    "as_of_date",
+                    "fund_code",
+                    "fund_name",
+                    "fund_full_name",
+                    "fund_type",
+                    "inception_date",
+                    "inception_years",
+                    "scale_billion",
+                    "subscribe_status",
+                    "redeem_status",
+                    "next_open_day",
+                    "purchase_min_amount",
+                    "daily_limit_amount",
+                    "management_fee_rate",
+                    "custodian_fee_rate",
+                    "sales_service_fee_rate",
+                    "max_subscribe_fee_rate",
+                    "purchase_fee_rate",
+                    "fee_source_max_subscribe",
+                    "fee_source_purchase",
+                    "last_updated_date",
+                    "last_personnel_change_date",
+                ]
+                if not dim_base.empty:
+                    sql = (
+                        "INSERT INTO dim_fund_base ("
+                        + ",".join(base_cols)
+                        + ") VALUES ("
+                        + ",".join(["%s"] * len(base_cols))
+                        + ")"
+                    )
+                    cur.executemany(sql, _to_records(dim_base, base_cols))
+
+                if not exclusion_detail.empty:
+                    detail_cols = ["data_version", "as_of_date", "fund_code", "reason_code", "reason_detail"]
+                    sql = (
+                        "INSERT INTO dim_fund_exclusion_detail ("
+                        + ",".join(detail_cols)
+                        + ") VALUES ("
+                        + ",".join(["%s"] * len(detail_cols))
+                        + ")"
+                    )
+                    cur.executemany(sql, _to_records(exclusion_detail, detail_cols))
+
+                if not exclusion_summary.empty:
+                    summary_cols = ["data_version", "as_of_date", "reason_code", "fund_count"]
+                    sql = (
+                        "INSERT INTO dim_fund_exclusion_summary ("
+                        + ",".join(summary_cols)
+                        + ") VALUES ("
+                        + ",".join(["%s"] * len(summary_cols))
+                        + ")"
+                    )
+                    cur.executemany(sql, _to_records(exclusion_summary, summary_cols))
+        finally:
+            mysql_conn.close()
+
+        # write clickhouse
+        _run_clickhouse_query_via_docker(
+            f"ALTER TABLE {db.clickhouse_db}.fact_fund_nav_daily DELETE WHERE data_version = '{args.data_version}'",
+            args.clickhouse_container,
+        )
+        _run_clickhouse_query_via_docker(
+            f"ALTER TABLE {db.clickhouse_db}.fact_fund_return_period DELETE WHERE data_version = '{args.data_version}'",
+            args.clickhouse_container,
+        )
+        _run_clickhouse_query_via_docker(
+            f"ALTER TABLE {db.clickhouse_db}.fact_fund_metrics_snapshot DELETE WHERE data_version = '{args.data_version}'",
+            args.clickhouse_container,
+        )
+        _run_clickhouse_query_via_docker(
+            f"ALTER TABLE {db.clickhouse_db}.fact_fund_scoreboard_snapshot DELETE WHERE data_version = '{args.data_version}'",
             args.clickhouse_container,
         )
 
-    if not scoreboard.empty:
-        for col in CH_SCOREBOARD_COLS:
-            if col not in scoreboard.columns:
-                scoreboard[col] = None
-        _insert_clickhouse_csv(
-            scoreboard,
-            f"{db.clickhouse_db}.fact_fund_scoreboard_snapshot",
-            CH_SCOREBOARD_COLS,
-            args.clickhouse_container,
-        )
+        if not nav_df.empty:
+            nav_df = nav_df.copy()
+            nav_df.insert(0, "data_version", args.data_version)
+            nav_df.insert(1, "as_of_date", as_of.date())
+            _insert_clickhouse_csv(
+                nav_df,
+                f"{db.clickhouse_db}.fact_fund_nav_daily",
+                [
+                    "data_version",
+                    "as_of_date",
+                    "fund_code",
+                    "nav_date",
+                    "unit_nav",
+                    "adjusted_nav",
+                    "daily_return",
+                    "latest_nav_date",
+                ],
+                args.clickhouse_container,
+                partition_group_cols=["nav_date"],
+            )
+
+        if not period_df.empty:
+            period_df = period_df.copy()
+            period_df.insert(0, "data_version", args.data_version)
+            period_df.insert(1, "as_of_date", as_of.date())
+            _insert_clickhouse_csv(
+                period_df,
+                f"{db.clickhouse_db}.fact_fund_return_period",
+                [
+                    "data_version",
+                    "as_of_date",
+                    "fund_code",
+                    "period_type",
+                    "period_key",
+                    "period_start",
+                    "period_end",
+                    "period_return",
+                ],
+                args.clickhouse_container,
+                partition_group_cols=["period_type", "period_end"],
+            )
+
+        if not metric_df.empty:
+            metric_insert = metric_df[metric_df["stale_nav_excluded"] == False].copy()
+            metric_insert = metric_insert.drop(columns=["stale_nav_excluded"])
+            metric_insert.insert(0, "data_version", args.data_version)
+            metric_insert.insert(1, "as_of_date", as_of.date())
+            for col in CH_METRICS_COLS:
+                if col not in metric_insert.columns:
+                    metric_insert[col] = None
+            _insert_clickhouse_csv(
+                metric_insert,
+                f"{db.clickhouse_db}.fact_fund_metrics_snapshot",
+                CH_METRICS_COLS,
+                args.clickhouse_container,
+            )
+
+        if not scoreboard.empty:
+            for col in CH_SCOREBOARD_COLS:
+                if col not in scoreboard.columns:
+                    scoreboard[col] = None
+            _insert_clickhouse_csv(
+                scoreboard,
+                f"{db.clickhouse_db}.fact_fund_scoreboard_snapshot",
+                CH_SCOREBOARD_COLS,
+                args.clickhouse_container,
+            )
+    else:
+        print("skip_sinks=True: only CSV artifacts generated, DB writes skipped")
 
     print(f"scoreboard_rows={len(scoreboard)}")
     print(f"exclusion_detail_rows={len(exclusion_detail)}")
@@ -1011,6 +1032,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--as-of-date", type=str, required=True)
     parser.add_argument("--stale-max-days", type=int, default=2)
     parser.add_argument("--code-limit", type=int, default=None)
+    parser.add_argument("--skip-sinks", action="store_true", help="Only generate CSV outputs, skip MySQL/ClickHouse writes")
 
     parser.add_argument("--apply-ddl", action="store_true")
     parser.add_argument("--mysql-ddl", type=Path, default=Path("fund_db_infra/sql/mysql_schema.sql"))

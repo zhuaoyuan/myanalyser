@@ -3,14 +3,28 @@ from __future__ import annotations
 import argparse
 import json
 import time
+import types
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
-import akshare as ak
 import pandas as pd
+
+from project_paths import default_run_id, project_root
+
+try:
+    import akshare as ak
+except Exception:  # noqa: BLE001
+    # In restricted environments (e.g. sandbox CI), importing akshare may fail
+    # due to optional binary deps. Keep module importable for mocked tests.
+    ak = types.SimpleNamespace(
+        fund_purchase_em=None,
+        fund_overview_em=None,
+        fund_open_fund_info_em=None,
+        fund_announcement_personnel_em=None,
+    )
 
 PURCHASE_COLUMNS = [
     "基金代码",
@@ -760,7 +774,7 @@ def _load_failed_codes(log_paths: Iterable[Path], stage: str) -> list[str]:
     return sorted(failed)
 
 
-def _default_paths(base_dir: Path) -> dict[str, Path]:
+def _default_paths(base_dir: Path, logs_dir: Path) -> dict[str, Path]:
     return {
         "purchase_csv": base_dir / "fund_purchase.csv",
         "overview_csv": base_dir / "fund_overview.csv",
@@ -770,18 +784,24 @@ def _default_paths(base_dir: Path) -> dict[str, Path]:
         "personnel_dir": base_dir / "fund_personnel_by_code",
         "cum_return_dir": base_dir / "fund_cum_return_by_code",
         "verify_json": base_dir / "verify_report.json",
-        "fail_overview_log": base_dir / "failed_overview.jsonl",
-        "fail_nav_log": base_dir / "failed_nav.jsonl",
-        "fail_bonus_log": base_dir / "failed_bonus.jsonl",
-        "fail_split_log": base_dir / "failed_split.jsonl",
-        "fail_personnel_log": base_dir / "failed_personnel.jsonl",
-        "fail_cum_return_log": base_dir / "failed_cum_return.jsonl",
+        "fail_overview_log": logs_dir / "failed_overview.jsonl",
+        "fail_nav_log": logs_dir / "failed_nav.jsonl",
+        "fail_bonus_log": logs_dir / "failed_bonus.jsonl",
+        "fail_split_log": logs_dir / "failed_split.jsonl",
+        "fail_personnel_log": logs_dir / "failed_personnel.jsonl",
+        "fail_cum_return_log": logs_dir / "failed_cum_return.jsonl",
     }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="AkShare 基金数据采集脚本")
-    parser.add_argument("--base-dir", default="myanalyser/data/fund_etl", help="输出目录")
+    parser.add_argument(
+        "--base-dir",
+        default=None,
+        help="ETL 输出目录（默认 data/versions/{run_id}/fund_etl）",
+    )
+    parser.add_argument("--run-id", default=None, help="数据版本目录名（默认 YYYYMMDD_HHMMSS[可选后缀]）")
+    parser.add_argument("--run-id-suffix", default=None, help="run_id 后缀描述，会拼接到时间戳后")
     parser.add_argument(
         "--mode",
         choices=[
@@ -810,10 +830,16 @@ def main() -> None:
     parser.add_argument("--progress-interval", type=float, default=5.0)
     args = parser.parse_args()
 
-    base_dir = Path(args.base_dir)
-    paths = _default_paths(base_dir)
+    root = project_root()
+    run_id = args.run_id or default_run_id(args.run_id_suffix)
+    base_dir = Path(args.base_dir).resolve() if args.base_dir else (root / "data" / "versions" / run_id / "fund_etl")
+    logs_dir = root / "data" / "versions" / run_id / "logs"
+    paths = _default_paths(base_dir=base_dir, logs_dir=logs_dir)
     retry_cfg = RetryConfig(max_retries=args.max_retries, retry_sleep_seconds=args.retry_sleep)
     progress_cfg = ProgressConfig(print_interval_seconds=args.progress_interval)
+    print(f"[run] run_id={run_id}")
+    print(f"[run] fund_etl_dir={base_dir}")
+    print(f"[run] logs_dir={logs_dir}")
 
     if args.mode in {"verify", "all"}:
         report = verify_interfaces()

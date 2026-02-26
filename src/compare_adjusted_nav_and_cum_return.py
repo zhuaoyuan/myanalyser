@@ -123,6 +123,19 @@ def _empty_summary_row(code: str, missing: str) -> dict[str, object]:
 
 
 def compare_adjusted_nav_and_cum_return(base_dir: Path, output_dir: Path | None = None) -> dict[str, Path]:
+    out_dir = output_dir or (base_dir / "fund_return_compare")
+    return compare_adjusted_nav_and_cum_return_with_error_log(
+        base_dir=base_dir,
+        output_dir=output_dir,
+        error_log_path=out_dir / "errors.jsonl",
+    )
+
+
+def compare_adjusted_nav_and_cum_return_with_error_log(
+    base_dir: Path,
+    output_dir: Path | None = None,
+    error_log_path: Path | None = None,
+) -> dict[str, Path]:
     adjusted_dir = base_dir / "fund_adjusted_nav_by_code"
     cum_return_dir = base_dir / "fund_cum_return_by_code"
     if not adjusted_dir.is_dir():
@@ -133,9 +146,10 @@ def compare_adjusted_nav_and_cum_return(base_dir: Path, output_dir: Path | None 
     out_dir = output_dir or (base_dir / "fund_return_compare")
     detail_dir = out_dir / "details"
     summary_csv = out_dir / "summary.csv"
-    error_jsonl = out_dir / "errors.jsonl"
+    error_jsonl = error_log_path or (out_dir / "errors.jsonl")
     out_dir.mkdir(parents=True, exist_ok=True)
     detail_dir.mkdir(parents=True, exist_ok=True)
+    error_jsonl.parent.mkdir(parents=True, exist_ok=True)
     if error_jsonl.exists():
         error_jsonl.unlink()
 
@@ -268,12 +282,22 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Output directory (default: {base-dir}/fund_return_compare)",
     )
+    parser.add_argument(
+        "--error-log",
+        type=Path,
+        default=None,
+        help="Optional error log JSONL path (default: {output-dir}/errors.jsonl)",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
-    result = compare_adjusted_nav_and_cum_return(base_dir=args.base_dir, output_dir=args.output_dir)
+    result = compare_adjusted_nav_and_cum_return_with_error_log(
+        base_dir=args.base_dir,
+        output_dir=args.output_dir,
+        error_log_path=args.error_log,
+    )
     print(f"summary: {result['summary_csv']}")
     print(f"details: {result['detail_dir']}")
     print(f"errors: {result['error_jsonl']}")

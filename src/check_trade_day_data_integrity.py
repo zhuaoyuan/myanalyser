@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from project_paths import project_root
+
 
 SUMMARY_COLUMNS = ["基金编码", "数据完整比例"]
 DETAIL_COLUMNS = ["交易日日期", "该日期数据是否存在"]
@@ -18,8 +20,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end-date", required=True, help="结束日期，格式 YYYY-MM-DD")
     parser.add_argument(
         "--trade-dates-csv",
-        default=str(Path(__file__).resolve().parent / "trade_dates.csv"),
-        help="交易日历 CSV 文件路径，默认使用 myanalyser/trade_dates.csv",
+        default=str(project_root() / "data" / "common" / "trade_dates.csv"),
+        help="交易日历 CSV 文件路径，默认使用 data/common/trade_dates.csv",
     )
     parser.add_argument(
         "--output-dir",

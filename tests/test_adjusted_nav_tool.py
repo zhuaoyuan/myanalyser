@@ -8,7 +8,7 @@ import sys
 
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from adjusted_nav_tool import calculate_adjusted_nav, process_all_funds
 
@@ -34,7 +34,7 @@ class AdjustedNavToolTest(unittest.TestCase):
         self.assertAlmostEqual(out.loc[2, "复权净值"], 3.75)
 
     def test_process_sample_163402(self) -> None:
-        base = Path(__file__).resolve().parent / "myanalyser" / "data" / "samples"
+        base = Path(__file__).resolve().parent.parent / "data" / "samples"
         with tempfile.TemporaryDirectory() as d:
             output_dir = Path(d) / "adjusted"
             summary = process_all_funds(

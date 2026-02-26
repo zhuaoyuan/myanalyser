@@ -97,13 +97,18 @@ python src/pipeline_scoreboard.py \
 pip install akshare pandas numpy pymysql
 ```
 
+数据库联调需本地可用 Docker（用于 `fund_db_infra` 的 MySQL + ClickHouse）。
+
 ## 统一验收命令
 
-项目提供统一验收脚本 `tools/verify.sh`，用于在新目录结构下执行完整回归闭环：
+项目提供统一验收脚本 `tools/verify.sh`，用于执行端到端闭环验收（含数据库）：
 
 - 单测回归（`tests/test_*.py`）
 - 核心 CLI smoke（`fund_etl`、`pipeline_scoreboard`、`backtest_portfolio`、`compare_adjusted_nav_and_cum_return`、`check_trade_day_data_integrity`）
-- 数据完整性检查（真实调用 `src/check_trade_day_data_integrity.py`）
+- 启动 `fund_db_infra`（MySQL + ClickHouse）
+- ETL 抽样数据链路（step1~step7，抽样 101 只：前 100 + `163402`）
+- 复权净值计算、交易日完整性检查、复权收益率一致性比对
+- 评分榜单入库与导出、回测报告生成
 
 ```bash
 cd /Users/zhuaoyuan/cursor-workspace/finance/myanalyser
@@ -116,3 +121,16 @@ bash tools/verify.sh
 ```bash
 RUN_ID=20260226_220000_verify bash tools/verify.sh
 ```
+
+如需固定数据库版本号，可同时指定 `DATA_VERSION`：
+
+```bash
+RUN_ID=20260226_220000_verify DATA_VERSION=20260226_verify_db bash tools/verify.sh
+```
+
+主要产物位置：
+
+- `data/versions/{RUN_ID}/fund_etl`
+- `data/versions/{RUN_ID}/logs`
+- `artifacts/verify_{RUN_ID}/scoreboard`
+- `artifacts/verify_{RUN_ID}/backtest`

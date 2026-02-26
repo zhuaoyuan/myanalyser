@@ -749,6 +749,8 @@ def _insert_clickhouse_csv(
     columns: list[str],
     container_name: str,
     partition_group_cols: list[str] | None = None,
+    chunk_rows: int = 200_000,
+    max_partition_groups_per_insert: int = 1,
 ) -> None:
     if df.empty:
         return
@@ -773,20 +775,37 @@ def _insert_clickhouse_csv(
     else:
         parts = [payload_df]
 
+    bundled_parts: list[pd.DataFrame] = []
+    if partition_group_cols and max_partition_groups_per_insert > 1:
+        current_batch: list[pd.DataFrame] = []
+        for part in parts:
+            current_batch.append(part)
+            if len(current_batch) >= max_partition_groups_per_insert:
+                bundled_parts.append(pd.concat(current_batch, ignore_index=True))
+                current_batch = []
+        if current_batch:
+            bundled_parts.append(pd.concat(current_batch, ignore_index=True))
+    else:
+        bundled_parts = parts
+
     query = f"INSERT INTO {table} ({','.join(columns)}) FORMAT CSV"
-    for part_df in parts:
+    for part_df in bundled_parts:
         for col in part_df.columns:
             if pd.api.types.is_datetime64_any_dtype(part_df[col]):
                 part_df[col] = part_df[col].dt.strftime("%Y-%m-%d")
         part_df = part_df.replace({np.nan: None, pd.NaT: None})
-        csv_text = part_df.to_csv(index=False, header=False, na_rep="\\N")
-        subprocess.run(
-            ["docker", "exec", "-i", container_name, "clickhouse-client", "--query", query],
-            input=csv_text,
-            text=True,
-            check=True,
-            capture_output=True,
-        )
+        if chunk_rows <= 0:
+            chunk_rows = len(part_df)
+        for start in range(0, len(part_df), chunk_rows):
+            chunk_df = part_df.iloc[start : start + chunk_rows]
+            csv_text = chunk_df.to_csv(index=False, header=False, na_rep="\\N")
+            subprocess.run(
+                ["docker", "exec", "-i", container_name, "clickhouse-client", "--query", query],
+                input=csv_text,
+                text=True,
+                check=True,
+                capture_output=True,
+            )
 
 
 def run_pipeline(args: argparse.Namespace) -> None:
@@ -962,6 +981,8 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 ],
                 args.clickhouse_container,
                 partition_group_cols=["nav_date"],
+                chunk_rows=100_000,
+                max_partition_groups_per_insert=24,
             )
 
         if not period_df.empty:
@@ -983,6 +1004,8 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 ],
                 args.clickhouse_container,
                 partition_group_cols=["period_type", "period_end"],
+                chunk_rows=100_000,
+                max_partition_groups_per_insert=60,
             )
 
         if not metric_df.empty:

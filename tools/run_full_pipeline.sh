@@ -9,6 +9,21 @@ DB_INFRA_DIR="${WORKSPACE_ROOT}/fund_db_infra"
 
 cd "${PROJECT_ROOT}"
 
+LOCAL_PURCHASE_CSV=""
+if [[ $# -gt 0 ]]; then
+  case "$1" in
+    @*)
+      LOCAL_PURCHASE_CSV="${1#@}"
+      shift
+      ;;
+  esac
+fi
+
+if [[ $# -gt 0 ]]; then
+  echo "[full-run] usage: $0 [@/absolute/or/relative/path/to/fund_purchase.csv]"
+  exit 1
+fi
+
 if [[ -z "${VIRTUAL_ENV:-}" ]]; then
   echo "[full-run] warning: VIRTUAL_ENV is not active. Please run:"
   echo "  source /Users/zhuaoyuan/cursor-workspace/finance/myanalyser/.venv312/bin/activate"
@@ -99,6 +114,24 @@ if not files:
 PY
 }
 
+assert_purchase_csv_valid() {
+  local path="$1"
+  "${PYTHON_BIN}" - <<'PY' "${path}"
+from pathlib import Path
+import pandas as pd
+import sys
+
+path = Path(sys.argv[1])
+if not path.exists():
+    raise SystemExit(1)
+df = pd.read_csv(path, dtype=str, encoding="utf-8-sig")
+if "基金代码" not in df.columns:
+    raise SystemExit(2)
+if df.empty:
+    raise SystemExit(3)
+PY
+}
+
 checkpoint_path() {
   local step="$1"
   echo "${CHECKPOINT_DIR}/${step}.ok"
@@ -163,6 +196,18 @@ echo "[full-run] data_version=${DATA_VERSION}"
 
 mkdir -p "${FUND_ETL_DIR}" "${LOGS_DIR}" "${ARTIFACTS_DIR}" "${SCOREBOARD_DIR}" "${CHECKPOINT_DIR}"
 
+if [[ -n "${LOCAL_PURCHASE_CSV}" ]]; then
+  if [[ ! -f "${LOCAL_PURCHASE_CSV}" ]]; then
+    echo "[full-run] local purchase csv not found: ${LOCAL_PURCHASE_CSV}"
+    exit 1
+  fi
+  assert_purchase_csv_valid "${LOCAL_PURCHASE_CSV}" || {
+    echo "[full-run] local purchase csv is invalid (need non-empty file with 基金代码 column): ${LOCAL_PURCHASE_CSV}"
+    exit 1
+  }
+  echo "[full-run] local purchase csv mode enabled: ${LOCAL_PURCHASE_CSV}"
+fi
+
 echo "[full-run] step 1/7: start db infra"
 assert_file_exists "${WORKSPACE_ROOT}/fund_db_infra/docker-compose.yml"
 docker_compose_cmd -f "${WORKSPACE_ROOT}/fund_db_infra/docker-compose.yml" up -d
@@ -179,14 +224,39 @@ if has_checkpoint "step2_fund_etl"; then
   assert_dir_has_csv "${FUND_ETL_DIR}/fund_personnel_by_code"
   assert_dir_has_csv "${FUND_ETL_DIR}/fund_cum_return_by_code"
 else
-  echo "[full-run] step 2/7: full fund_etl (verify + step1~step7)"
-  "${PYTHON_BIN}" src/fund_etl.py \
-    --run-id "${RUN_ID}" \
-    --mode all \
-    --max-retries "${ETL_MAX_RETRIES}" \
-    --retry-sleep "${ETL_RETRY_SLEEP}" \
-    --max-workers "${ETL_MAX_WORKERS}" \
-    --progress-interval "${ETL_PROGRESS_INTERVAL}"
+  if [[ -n "${LOCAL_PURCHASE_CSV}" ]]; then
+    echo "[full-run] step 2/7: local purchase csv + fund_etl (verify + step2~step7)"
+    cp "${LOCAL_PURCHASE_CSV}" "${FUND_ETL_DIR}/fund_purchase.csv"
+    assert_purchase_csv_valid "${FUND_ETL_DIR}/fund_purchase.csv" || {
+      echo "[full-run] copied purchase csv is invalid: ${FUND_ETL_DIR}/fund_purchase.csv"
+      exit 1
+    }
+    "${PYTHON_BIN}" src/fund_etl.py \
+      --run-id "${RUN_ID}" \
+      --mode verify \
+      --max-retries "${ETL_MAX_RETRIES}" \
+      --retry-sleep "${ETL_RETRY_SLEEP}" \
+      --max-workers "${ETL_MAX_WORKERS}" \
+      --progress-interval "${ETL_PROGRESS_INTERVAL}"
+    for mode in step2 step3 step4 step5 step6 step7; do
+      "${PYTHON_BIN}" src/fund_etl.py \
+        --run-id "${RUN_ID}" \
+        --mode "${mode}" \
+        --max-retries "${ETL_MAX_RETRIES}" \
+        --retry-sleep "${ETL_RETRY_SLEEP}" \
+        --max-workers "${ETL_MAX_WORKERS}" \
+        --progress-interval "${ETL_PROGRESS_INTERVAL}"
+    done
+  else
+    echo "[full-run] step 2/7: full fund_etl (verify + step1~step7)"
+    "${PYTHON_BIN}" src/fund_etl.py \
+      --run-id "${RUN_ID}" \
+      --mode all \
+      --max-retries "${ETL_MAX_RETRIES}" \
+      --retry-sleep "${ETL_RETRY_SLEEP}" \
+      --max-workers "${ETL_MAX_WORKERS}" \
+      --progress-interval "${ETL_PROGRESS_INTERVAL}"
+  fi
   assert_csv_has_rows "${FUND_ETL_DIR}/fund_purchase.csv"
   assert_csv_has_rows "${FUND_ETL_DIR}/fund_overview.csv"
   assert_dir_has_csv "${FUND_ETL_DIR}/fund_nav_by_code"

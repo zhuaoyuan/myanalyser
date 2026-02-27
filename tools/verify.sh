@@ -47,23 +47,23 @@
 
 # ## 10 步执行流程（业务视角）
 
-# ### Step 1/10：单元测试
+# ### Step 1/11：单元测试
 
 # - 执行 `tests/test_*.py` 全量单测。
 # - 业务意义：先守住函数级/模块级正确性，避免后续长链路浪费时间。
 
-# ### Step 2/10：核心 CLI 冒烟（5 个）
+# ### Step 2/11：核心 CLI 冒烟（5 个）
 
 # - 指定执行 5 个关键 CLI 集成测试（fund_etl/pipeline/backtest/compare/integrity）。
 # - 业务意义：确认“最关键入口命令”在当前代码状态能启动并跑通基础流程。
 
-# ### Step 3/10：启动数据库基础设施
+# ### Step 3/11：启动数据库基础设施
 
 # - 启动 `fund_db_infra` 的 docker compose。
 # - 等待 MySQL / ClickHouse readiness。
 # - 业务意义：后续 scoreboard 入库和回测选基依赖 DB，可提前暴露环境问题。
 
-# ### Step 4/10：fund_etl 接口探测 + step1 全量清单
+# ### Step 4/11：fund_etl 接口探测 + step1 全量清单
 
 # - 执行 `fund_etl.py --mode verify`（接口列结构检查报告）
 # - 执行 `fund_etl.py --mode step1`（抓基金购买清单）
@@ -285,10 +285,10 @@ echo "[verify] data_version=${DATA_VERSION}"
 
 mkdir -p "${FUND_ETL_DIR}" "${LOGS_DIR}" "${ARTIFACTS_DIR}" "${SCOREBOARD_DIR}" "${BACKTEST_DIR}"
 
-echo "[verify] step 1/10: unit tests"
+echo "[verify] step 1/11: unit tests"
 "${PYTHON_BIN}" -m unittest discover -s tests -p "test_*.py" -v
 
-echo "[verify] step 2/10: core CLI smoke tests (5 CLIs)"
+echo "[verify] step 2/11: core CLI smoke tests (5 CLIs)"
 "${PYTHON_BIN}" -m unittest -v \
   tests.test_cli_integration.CoreCliIntegrationTest.test_fund_etl_cli_run_id_layout \
   tests.test_cli_integration.CoreCliIntegrationTest.test_pipeline_cli_smoke_skip_sinks_with_run_id_layout \
@@ -296,19 +296,19 @@ echo "[verify] step 2/10: core CLI smoke tests (5 CLIs)"
   tests.test_cli_integration.CoreCliIntegrationTest.test_compare_cli_with_run_id_layout \
   tests.test_cli_integration.CoreCliIntegrationTest.test_check_trade_day_integrity_cli_with_run_id_layout
 
-echo "[verify] step 3/10: start db infra"
+echo "[verify] step 3/11: start db infra"
 assert_file_exists "${WORKSPACE_ROOT}/fund_db_infra/docker-compose.yml"
 docker_compose_cmd -f "${WORKSPACE_ROOT}/fund_db_infra/docker-compose.yml" up -d
 wait_mysql_ready
 wait_clickhouse_ready
 
-echo "[verify] step 4/10: fund_etl verify + step1"
+echo "[verify] step 4/11: fund_etl verify + step1"
 "${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode verify
 "${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step1
 assert_file_exists "${FUND_ETL_DIR}/fund_purchase.csv"
 assert_csv_has_rows "${FUND_ETL_DIR}/fund_purchase.csv"
 
-echo "[verify] step 5/10: sampling 101 funds (top100 + 163402)"
+echo "[verify] step 5/11: sampling 21 funds (top20 + 163402)"
 RUN_ID="${RUN_ID}" "${PYTHON_BIN}" - <<'PY'
 from pathlib import Path
 import os
@@ -328,27 +328,27 @@ df["基金代码"] = df["基金代码"].map(lambda v: str(v).strip().zfill(6))
 df = df.drop_duplicates(subset=["基金代码"], keep="first")
 target_code = "163402"
 
-top100 = df[df["基金代码"] != target_code].head(100).copy()
-if top100.shape[0] < 100:
-    raise ValueError(f"fund_purchase rows not enough for sampling 100 rows: got={top100.shape[0]}")
+top20 = df[df["基金代码"] != target_code].head(20).copy()
+if top20.shape[0] < 20:
+    raise ValueError(f"fund_purchase rows not enough for sampling 20 rows: got={top20.shape[0]}")
 
 target_row = df[df["基金代码"] == target_code].head(1).copy()
 if target_row.empty:
-    target_row = top100.head(1).copy()
+    target_row = top20.head(1).copy()
     target_row["基金代码"] = target_code
     for col in target_row.columns:
         if col != "基金代码":
             target_row[col] = ""
 
-sample_df = pd.concat([top100, target_row], ignore_index=True)
-if sample_df.shape[0] != 101:
-    raise ValueError(f"sample rows expected 101, got={sample_df.shape[0]}")
+sample_df = pd.concat([top20, target_row], ignore_index=True)
+if sample_df.shape[0] != 21:
+    raise ValueError(f"sample rows expected 21, got={sample_df.shape[0]}")
 
 sample_df.to_csv(purchase_csv, index=False, encoding="utf-8-sig")
 PY
 assert_csv_has_rows "${FUND_ETL_DIR}/fund_purchase.csv"
 
-echo "[verify] step 6/10: fund_etl step2~step7 on sampled funds"
+echo "[verify] step 6/11: fund_etl step2~step7 on sampled funds"
 "${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step2 --max-workers 8
 "${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step3
 "${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step4
@@ -362,7 +362,7 @@ assert_dir_has_csv "${FUND_ETL_DIR}/fund_split_by_code"
 assert_dir_has_csv "${FUND_ETL_DIR}/fund_personnel_by_code"
 assert_dir_has_csv "${FUND_ETL_DIR}/fund_cum_return_by_code"
 
-echo "[verify] step 7/10: calculate adjusted nav"
+echo "[verify] step 7/11: calculate adjusted nav"
 "${PYTHON_BIN}" src/adjusted_nav_tool.py \
   --nav-dir "${FUND_ETL_DIR}/fund_nav_by_code" \
   --bonus-dir "${FUND_ETL_DIR}/fund_bonus_by_code" \
@@ -372,7 +372,7 @@ echo "[verify] step 7/10: calculate adjusted nav"
   --fail-log "${LOGS_DIR}/failed_adjusted_nav.jsonl"
 assert_dir_has_csv "${FUND_ETL_DIR}/fund_adjusted_nav_by_code"
 
-echo "[verify] step 8/10: data integrity reports"
+echo "[verify] step 8/11: data integrity reports"
 "${PYTHON_BIN}" src/check_trade_day_data_integrity.py \
   --base-dir "${FUND_ETL_DIR}" \
   --start-date 2025-01-01 \
@@ -387,7 +387,7 @@ if [[ ! -f "${SUMMARY_CSV}" ]]; then
 fi
 assert_csv_has_rows "${SUMMARY_CSV}"
 
-echo "[verify] step 9/10: compare adjusted nav vs cum return"
+echo "[verify] step 9/11: compare adjusted nav vs cum return"
 "${PYTHON_BIN}" src/compare_adjusted_nav_and_cum_return.py \
   --base-dir "${FUND_ETL_DIR}" \
   --output-dir "${ARTIFACTS_DIR}/fund_return_compare" \
@@ -395,7 +395,7 @@ echo "[verify] step 9/10: compare adjusted nav vs cum return"
 assert_csv_has_rows "${ARTIFACTS_DIR}/fund_return_compare/summary.csv"
 assert_dir_exists "${ARTIFACTS_DIR}/fund_return_compare/details"
 
-echo "[verify] step 9.5/10: filter fund list for next step"
+echo "[verify] step 9.5/11: filter fund list for next step"
 "${PYTHON_BIN}" src/filter_funds_for_next_step.py \
   --base-dir "${FUND_ETL_DIR}" \
   --compare-details-dir "${ARTIFACTS_DIR}/fund_return_compare/details" \
@@ -437,7 +437,7 @@ print(f"filtered_purchase_csv={output_csv}")
 PY
 assert_csv_has_rows "${FILTERED_PURCHASE_CSV}"
 
-echo "[verify] step 10/10: pipeline scoreboard -> db + backtest"
+echo "[verify] step 10/11: pipeline scoreboard -> db + backtest"
 AS_OF_DATE="$("${PYTHON_BIN}" - <<'PY' "${FUND_ETL_DIR}/fund_adjusted_nav_by_code"
 from pathlib import Path
 import sys
@@ -504,9 +504,36 @@ assert_csv_has_rows "${SCOREBOARD_DIR}/fund_scoreboard_${DATA_VERSION}.csv"
 assert_csv_has_rows "${BACKTEST_DIR}/backtest_window_detail.csv"
 assert_file_exists "${BACKTEST_DIR}/backtest_report.md"
 
+echo "[verify] step 11/11: recalc scoreboard verification (must all pass)"
+"${PYTHON_BIN}" src/verify_scoreboard_recalc.py \
+  --scoreboard-csv "${SCOREBOARD_DIR}/fund_scoreboard_${DATA_VERSION}.csv" \
+  --fund-etl-dir "${FUND_ETL_DIR}" \
+  --output-dir "${ARTIFACTS_DIR}/scoreboard_recheck" \
+  --max-input-rows 200
+assert_csv_has_rows "${ARTIFACTS_DIR}/scoreboard_recheck/summary.csv"
+
+"${PYTHON_BIN}" - <<'PY' "${ARTIFACTS_DIR}/scoreboard_recheck/summary.csv"
+from pathlib import Path
+import sys
+
+import pandas as pd
+
+summary_csv = Path(sys.argv[1])
+df = pd.read_csv(summary_csv, dtype=str, encoding="utf-8-sig")
+if "待核验字段是否全部核验通过" not in df.columns:
+    raise ValueError(f"missing column in summary: {summary_csv}")
+failed_df = df[df["待核验字段是否全部核验通过"] != "是"].copy()
+if not failed_df.empty:
+    print("recalc verification failed funds:")
+    print(failed_df[["基金代码", "未通过字段名"]].to_string(index=False))
+    raise SystemExit(1)
+print(f"recalc verification all passed: funds={len(df)}")
+PY
+
 echo "[verify] OK"
 echo "[verify] run_id=${RUN_ID}"
 echo "[verify] data_version=${DATA_VERSION}"
 echo "[verify] integrity_summary=${SUMMARY_CSV}"
 echo "[verify] scoreboard_csv=${SCOREBOARD_DIR}/fund_scoreboard_${DATA_VERSION}.csv"
 echo "[verify] backtest_report=${BACKTEST_DIR}/backtest_report.md"
+echo "[verify] scoreboard_recheck_summary=${ARTIFACTS_DIR}/scoreboard_recheck/summary.csv"

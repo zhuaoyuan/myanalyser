@@ -4,6 +4,7 @@ import argparse
 import math
 import re
 import subprocess
+import time
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date
@@ -448,9 +449,18 @@ def _window_metrics(nav_df: pd.DataFrame, end_date: pd.Timestamp, years: int) ->
     return out
 
 
-def _load_personnel_latest_date(personnel_dir: Path) -> dict[str, pd.Timestamp | pd.NaT]:
+def _load_personnel_latest_date(
+    personnel_dir: Path, target_codes: set[str] | None = None
+) -> dict[str, pd.Timestamp | pd.NaT]:
     out: dict[str, pd.Timestamp | pd.NaT] = {}
-    for path in personnel_dir.glob("*.csv"):
+    if target_codes is not None:
+        paths = [personnel_dir / f"{code}.csv" for code in sorted(target_codes)]
+    else:
+        paths = list(personnel_dir.glob("*.csv"))
+
+    for path in paths:
+        if not path.exists():
+            continue
         code = _safe_code(path.stem)
         try:
             df = pd.read_csv(path, dtype={"基金代码": str})
@@ -536,16 +546,27 @@ def _build_dim_base(
     return merged[cols].copy()
 
 
-def _calc_all_metrics(nav_dir: Path, as_of_date: pd.Timestamp, stale_max_days: int, code_limit: int | None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def _calc_all_metrics(
+    nav_dir: Path,
+    as_of_date: pd.Timestamp,
+    stale_max_days: int,
+    code_limit: int | None,
+    target_codes: set[str] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     metric_rows: list[dict[str, object]] = []
-    nav_rows: list[dict[str, object]] = []
-    period_rows: list[dict[str, object]] = []
+    nav_parts: list[pd.DataFrame] = []
+    period_parts: list[pd.DataFrame] = []
 
-    files = sorted(nav_dir.glob("*.csv"))
+    if target_codes is not None:
+        files = [nav_dir / f"{code}.csv" for code in sorted(target_codes)]
+    else:
+        files = sorted(nav_dir.glob("*.csv"))
     if code_limit:
         files = files[:code_limit]
 
     for path in files:
+        if not path.exists():
+            continue
         code = _safe_code(path.stem)
         df = pd.read_csv(path, dtype={"基金代码": str})
         if df.empty or "净值日期" not in df.columns or "复权净值" not in df.columns:
@@ -570,33 +591,37 @@ def _calc_all_metrics(nav_dir: Path, as_of_date: pd.Timestamp, stale_max_days: i
             continue
 
         df["daily_return"] = df["复权净值"].pct_change()
-        for _, row in df.iterrows():
-            nav_rows.append(
+        nav_parts.append(
+            pd.DataFrame(
                 {
                     "fund_code": code,
-                    "nav_date": row["净值日期"],
-                    "unit_nav": row.get("单位净值"),
-                    "adjusted_nav": row["复权净值"],
-                    "daily_return": row.get("daily_return"),
+                    "nav_date": df["净值日期"].values,
+                    "unit_nav": df["单位净值"].values,
+                    "adjusted_nav": df["复权净值"].values,
+                    "daily_return": df["daily_return"].values,
                     "latest_nav_date": end_date,
                 }
             )
+        )
 
         for ptype, freq in [("W", "W-FRI"), ("M", "ME"), ("Q", "QE")]:
             s = df.set_index("净值日期")["复权净值"].resample(freq).last().dropna()
             r = s.pct_change().dropna()
-            for idx, val in r.items():
-                start_idx = s.index[s.index.get_loc(idx) - 1]
-                period_rows.append(
+            if r.empty:
+                continue
+            starts = s.index.to_series().shift(1).reindex(r.index)
+            period_parts.append(
+                pd.DataFrame(
                     {
                         "fund_code": code,
                         "period_type": ptype,
-                        "period_key": idx.strftime("%Y-%m-%d"),
-                        "period_start": start_idx,
-                        "period_end": idx,
-                        "period_return": float(val),
+                        "period_key": r.index.strftime("%Y-%m-%d"),
+                        "period_start": starts.values,
+                        "period_end": r.index.values,
+                        "period_return": r.values.astype(float),
                     }
                 )
+            )
 
         base = _compute_metrics(df, end_date)
         m3 = _window_metrics(df, end_date, years=3)
@@ -616,7 +641,12 @@ def _calc_all_metrics(nav_dir: Path, as_of_date: pd.Timestamp, stale_max_days: i
             metric_row.setdefault(k, None)
         metric_rows.append(metric_row)
 
-    return pd.DataFrame(metric_rows), pd.DataFrame(nav_rows), pd.DataFrame(period_rows)
+    nav_cols = ["fund_code", "nav_date", "unit_nav", "adjusted_nav", "daily_return", "latest_nav_date"]
+    period_cols = ["fund_code", "period_type", "period_key", "period_start", "period_end", "period_return"]
+    metric_df = pd.DataFrame(metric_rows)
+    nav_df = pd.concat(nav_parts, ignore_index=True) if nav_parts else pd.DataFrame(columns=nav_cols)
+    period_df = pd.concat(period_parts, ignore_index=True) if period_parts else pd.DataFrame(columns=period_cols)
+    return metric_df, nav_df, period_df
 
 
 def _build_scoreboard(
@@ -743,6 +773,16 @@ def _run_clickhouse_query_via_docker(query: str, container_name: str) -> None:
     )
 
 
+def _query_clickhouse_text_via_docker(query: str, container_name: str) -> str:
+    proc = subprocess.run(
+        ["docker", "exec", container_name, "clickhouse-client", "--query", query],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return (proc.stdout or "").strip()
+
+
 def _insert_clickhouse_csv(
     df: pd.DataFrame,
     table: str,
@@ -754,20 +794,16 @@ def _insert_clickhouse_csv(
 ) -> None:
     if df.empty:
         return
+
     payload_df = df[columns].copy()
     if partition_group_cols:
         key_cols: list[str] = []
         for col in partition_group_cols:
             key_col = f"_partition_key_{col}"
-            if col in payload_df.columns:
-                if pd.api.types.is_datetime64_any_dtype(payload_df[col]):
-                    payload_df[key_col] = payload_df[col].dt.strftime("%Y-%m")
-                else:
-                    as_dt = pd.to_datetime(payload_df[col], errors="coerce")
-                    if as_dt.notna().all():
-                        payload_df[key_col] = as_dt.dt.strftime("%Y-%m")
-                    else:
-                        payload_df[key_col] = payload_df[col].astype(str)
+            if col in payload_df.columns and pd.api.types.is_datetime64_any_dtype(payload_df[col]):
+                payload_df[key_col] = payload_df[col].dt.strftime("%Y-%m")
+            elif col in payload_df.columns:
+                payload_df[key_col] = payload_df[col].astype(str)
             else:
                 payload_df[key_col] = ""
             key_cols.append(key_col)
@@ -799,21 +835,32 @@ def _insert_clickhouse_csv(
         for start in range(0, len(part_df), chunk_rows):
             chunk_df = part_df.iloc[start : start + chunk_rows]
             csv_text = chunk_df.to_csv(index=False, header=False, na_rep="\\N")
-            subprocess.run(
-                ["docker", "exec", "-i", container_name, "clickhouse-client", "--query", query],
-                input=csv_text,
-                text=True,
-                check=True,
-                capture_output=True,
-            )
+            try:
+                subprocess.run(
+                    ["docker", "exec", "-i", container_name, "clickhouse-client", "--query", query],
+                    input=csv_text,
+                    text=True,
+                    check=True,
+                    capture_output=True,
+                )
+            except subprocess.CalledProcessError as err:
+                stderr = (err.stderr or "").strip()
+                snippet = stderr[-1000:] if stderr else "<empty stderr>"
+                raise RuntimeError(
+                    f"ClickHouse insert failed for {table}, rows={len(chunk_df)}, "
+                    f"chunk_range=[{start},{start + len(chunk_df)}), stderr={snippet}"
+                ) from err
 
 
 def run_pipeline(args: argparse.Namespace) -> None:
+    t0 = time.perf_counter()
     as_of = pd.to_datetime(args.as_of_date)
 
     purchase_df = pd.read_csv(args.purchase_csv, dtype={"基金代码": str})
     overview_df = pd.read_csv(args.overview_csv, dtype={"基金代码": str})
-    personnel_latest = _load_personnel_latest_date(args.personnel_dir)
+    target_codes = {_safe_code(code) for code in purchase_df.get("基金代码", pd.Series(dtype=str)).dropna().tolist()}
+    print(f"[scoreboard] target_fund_count={len(target_codes)}")
+    personnel_latest = _load_personnel_latest_date(args.personnel_dir, target_codes=target_codes)
 
     dim_base = _build_dim_base(
         purchase_df=purchase_df,
@@ -828,6 +875,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
         as_of_date=as_of,
         stale_max_days=args.stale_max_days,
         code_limit=args.code_limit,
+        target_codes=target_codes,
     )
 
     scoreboard, exclusion_detail, exclusion_summary = _build_scoreboard(
@@ -945,22 +993,27 @@ def run_pipeline(args: argparse.Namespace) -> None:
             mysql_conn.close()
 
         # write clickhouse
-        _run_clickhouse_query_via_docker(
-            f"ALTER TABLE {db.clickhouse_db}.fact_fund_nav_daily DELETE WHERE data_version = '{args.data_version}'",
-            args.clickhouse_container,
-        )
-        _run_clickhouse_query_via_docker(
-            f"ALTER TABLE {db.clickhouse_db}.fact_fund_return_period DELETE WHERE data_version = '{args.data_version}'",
-            args.clickhouse_container,
-        )
-        _run_clickhouse_query_via_docker(
-            f"ALTER TABLE {db.clickhouse_db}.fact_fund_metrics_snapshot DELETE WHERE data_version = '{args.data_version}'",
-            args.clickhouse_container,
-        )
-        _run_clickhouse_query_via_docker(
-            f"ALTER TABLE {db.clickhouse_db}.fact_fund_scoreboard_snapshot DELETE WHERE data_version = '{args.data_version}'",
-            args.clickhouse_container,
-        )
+        escaped_data_version = args.data_version.replace("\\", "\\\\").replace("'", "\\'")
+        for table in [
+            "fact_fund_nav_daily",
+            "fact_fund_return_period",
+            "fact_fund_metrics_snapshot",
+            "fact_fund_scoreboard_snapshot",
+        ]:
+            full_table = f"{db.clickhouse_db}.{table}"
+            count_text = _query_clickhouse_text_via_docker(
+                f"SELECT count() FROM {full_table} WHERE data_version = '{escaped_data_version}'",
+                args.clickhouse_container,
+            )
+            existing = int(count_text) if count_text else 0
+            if existing > 0:
+                print(f"[clickhouse] cleanup table={full_table} existing_rows={existing}")
+                _run_clickhouse_query_via_docker(
+                    f"ALTER TABLE {full_table} DELETE WHERE data_version = '{escaped_data_version}'",
+                    args.clickhouse_container,
+                )
+            else:
+                print(f"[clickhouse] cleanup skipped table={full_table} (no existing rows)")
 
         if not nav_df.empty:
             nav_df = nav_df.copy()
@@ -982,7 +1035,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 args.clickhouse_container,
                 partition_group_cols=["nav_date"],
                 chunk_rows=100_000,
-                max_partition_groups_per_insert=24,
+                max_partition_groups_per_insert=90,
             )
 
         if not period_df.empty:
@@ -1005,7 +1058,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 args.clickhouse_container,
                 partition_group_cols=["period_type", "period_end"],
                 chunk_rows=100_000,
-                max_partition_groups_per_insert=60,
+                max_partition_groups_per_insert=90,
             )
 
         if not metric_df.empty:
@@ -1042,6 +1095,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     print(f"scoreboard_csv={scoreboard_csv}")
     print(f"exclusion_detail_csv={exclusion_detail_csv}")
     print(f"exclusion_summary_csv={exclusion_summary_csv}")
+    print(f"[scoreboard] elapsed_seconds={time.perf_counter() - t0:.2f}")
 
 
 def build_parser() -> argparse.ArgumentParser:

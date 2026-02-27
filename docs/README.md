@@ -108,10 +108,11 @@ pip install akshare pandas numpy pymysql
 - 单测回归（`tests/test_*.py`）
 - 核心 CLI smoke（`fund_etl`、`pipeline_scoreboard`、`backtest_portfolio`、`compare_adjusted_nav_and_cum_return`、`check_trade_day_data_integrity`）
 - 启动 `fund_db_infra`（MySQL + ClickHouse）
-- ETL 抽样数据链路（step1~step7，抽样 101 只：前 100 + `163402`）
+- ETL 抽样数据链路（step1~step7，抽样 21 只：前 20 + `163402`）
 - 复权净值计算、交易日完整性检查、复权收益率一致性比对
 - Step 9.5 基金过滤（过滤结果会用于后续评分与回测）
 - 评分榜单入库与导出、回测报告生成
+- Step 11 独立重算核验（`verify_scoreboard_recalc.py`），要求 `scoreboard_recheck/summary.csv` 全部通过
 
 ```bash
 cd /Users/zhuaoyuan/cursor-workspace/finance/myanalyser
@@ -137,12 +138,13 @@ RUN_ID=20260226_220000_verify DATA_VERSION=20260226_verify_db bash tools/verify.
 - `data/versions/{RUN_ID}/logs`
 - `artifacts/verify_{RUN_ID}/scoreboard`
 - `artifacts/verify_{RUN_ID}/backtest`
+- `artifacts/verify_{RUN_ID}/scoreboard_recheck`
 
 ### 2) 正式跑（`tools/run_full_pipeline.sh`）
 
 用于真实生产/正式跑数，重点是“全量数据 + 全链路落库 + 可配置时间窗口”。
 
-- 不跑单测和 CLI smoke，不做 101 抽样，直接全量 ETL（`fund_etl --mode all`）
+- 不跑单测和 CLI smoke，不做验收抽样（验收跑为 21 只），直接全量 ETL（`fund_etl --mode all`）
 - 包含交易日完整性检查、复权收益率一致性比对、Step 9.5 过滤
 - 评分流程直接消费过滤后的 `fund_purchase_for_step10_filtered.csv`
 - 支持同 `RUN_ID` 断点续跑：各步骤成功后写 checkpoint，再次运行时优先复用已完成产物

@@ -34,6 +34,7 @@ myanalyser/
 - `src/check_trade_day_data_integrity.py`：交易日完整性检查
 - `src/pipeline_scoreboard.py`：评分榜单计算、导出与入库（支持 `--skip-sinks`）
 - `src/backtest_portfolio.py`：按规则回测组合
+- `src/verify_scoreboard_recalc.py`：榜单指标独立重算核验（从 fund_etl 中间数据重算并与导出榜单比对）
 
 ## 常用命令
 
@@ -90,6 +91,17 @@ python src/pipeline_scoreboard.py \
   --as-of-date 2026-02-26 \
   --skip-sinks
 ```
+
+```bash
+# 7) 榜单指标独立重算核验（验证 pipeline_scoreboard 计算正确性）
+RUN_ID=20260226_210000_smoke
+python src/verify_scoreboard_recalc.py \
+  --scoreboard-csv artifacts/scoreboard_${RUN_ID}/scoreboard.csv \
+  --fund-etl-dir data/versions/${RUN_ID}/fund_etl \
+  --output-dir artifacts/scoreboard_${RUN_ID}/scoreboard_recheck
+```
+
+核验脚本从 `fund_adjusted_nav_by_code` 重算年化收益、夏普比率、最大回撤等指标及排名，与导出榜单逐项比对。产物：`summary.csv`（每只基金是否全部通过）、`details/{基金代码}.csv`（逐项明细）、`metrics_recalc_sample.csv`。默认 `--max-input-rows 200`，超过会报错（重算需全量输入，不支持抽样）。
 
 ## 依赖
 

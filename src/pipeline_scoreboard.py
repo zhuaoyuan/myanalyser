@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pymysql
+from validators.validate_pipeline_artifacts import validate_stage_or_raise
 
 from scoreboard_metrics import (
     METRIC_DIRECTIONS,
@@ -237,6 +238,69 @@ class DbConfig:
     clickhouse_user: str
     clickhouse_password: str
     clickhouse_db: str
+
+
+@dataclass(frozen=True)
+class ClickHouseWriteConfig:
+    profile: str
+    wait_mutation_timeout_sec: int
+    wait_mutation_poll_sec: float
+    nav_chunk_rows: int
+    period_chunk_rows: int
+    max_partition_groups_per_insert: int
+    nav_sleep_between_chunks_sec: float
+    insert_workers: int
+
+
+def _resolve_clickhouse_write_config(
+    profile: str,
+    target_fund_count: int,
+    nav_row_count: int,
+    period_row_count: int,
+    small_data_threshold_funds: int,
+) -> ClickHouseWriteConfig:
+    selected = profile
+    if profile == "auto":
+        is_small = (
+            target_fund_count <= small_data_threshold_funds
+            and nav_row_count <= 200_000
+            and period_row_count <= 200_000
+        )
+        selected = "fast" if is_small else "safe"
+
+    if selected == "fast":
+        return ClickHouseWriteConfig(
+            profile="fast",
+            wait_mutation_timeout_sec=0,
+            wait_mutation_poll_sec=1.0,
+            nav_chunk_rows=0,
+            period_chunk_rows=0,
+            max_partition_groups_per_insert=16,
+            nav_sleep_between_chunks_sec=0.0,
+            insert_workers=4,
+        )
+
+    return ClickHouseWriteConfig(
+        profile="safe",
+        wait_mutation_timeout_sec=120,
+        wait_mutation_poll_sec=5.0,
+        nav_chunk_rows=5_000,
+        period_chunk_rows=5_000,
+        max_partition_groups_per_insert=1,
+        nav_sleep_between_chunks_sec=0.5,
+        insert_workers=1,
+    )
+
+
+def _resolve_clickhouse_scope_tables(scope: str) -> list[str]:
+    if scope == "verify_minimal":
+        return ["fact_fund_nav_daily", "fact_fund_scoreboard_snapshot"]
+    return [
+        "fact_fund_nav_daily",
+        "fact_fund_return_period",
+        "fact_fund_metrics_snapshot",
+        "fact_fund_scoreboard_snapshot",
+    ]
 
 
 def _format_value(value: object, style: str) -> object:
@@ -778,6 +842,9 @@ def _wait_clickhouse_mutations(
     container_name: str, database: str, timeout_sec: int = 120, poll_interval_sec: float = 5.0
 ) -> None:
     """等待指定库下所有 mutation 完成，避免 DELETE 与 INSERT 并发导致 OOM。"""
+    if timeout_sec <= 0:
+        print(f"[clickhouse] mutation wait skipped for {database} (timeout_sec={timeout_sec})")
+        return
     escaped_db = database.replace("\\", "\\\\").replace("'", "\\'")
     deadline = time.perf_counter() + timeout_sec
     while time.perf_counter() < deadline:
@@ -807,6 +874,7 @@ def _insert_clickhouse_csv(
     chunk_rows: int = 200_000,
     max_partition_groups_per_insert: int = 1,
     sleep_between_chunks_sec: float = 0.0,
+    insert_workers: int = 1,
 ) -> None:
     if df.empty:
         return
@@ -841,41 +909,59 @@ def _insert_clickhouse_csv(
         bundled_parts = parts
 
     query = f"INSERT INTO {table} ({','.join(columns)}) FORMAT CSV"
+    chunk_plan: list[tuple[pd.DataFrame, int, int]] = []
     total_chunks = 0
     for part_df in bundled_parts:
-        n_chunks = max(1, (len(part_df) + chunk_rows - 1) // chunk_rows) if chunk_rows > 0 else 1
+        if part_df.empty:
+            continue
+        effective_chunk_rows = chunk_rows if chunk_rows > 0 else len(part_df)
+        n_chunks = max(1, (len(part_df) + effective_chunk_rows - 1) // effective_chunk_rows) if effective_chunk_rows > 0 else 1
         total_chunks += n_chunks
-    chunk_idx = 0
-    for part_df in bundled_parts:
         for col in part_df.columns:
             if pd.api.types.is_datetime64_any_dtype(part_df[col]):
                 part_df[col] = part_df[col].dt.strftime("%Y-%m-%d")
         part_df = part_df.replace({np.nan: None, pd.NaT: None})
-        if chunk_rows <= 0:
-            chunk_rows = len(part_df)
-        for start in range(0, len(part_df), chunk_rows):
-            chunk_idx += 1
-            if total_chunks > 50 and chunk_idx % 100 == 0:
-                print(f"[clickhouse] {table} insert progress: {chunk_idx}/{total_chunks} chunks")
-            chunk_df = part_df.iloc[start : start + chunk_rows]
-            csv_text = chunk_df.to_csv(index=False, header=False, na_rep="\\N")
-            try:
-                subprocess.run(
-                    ["docker", "exec", "-i", container_name, "clickhouse-client", "--query", query],
-                    input=csv_text,
-                    text=True,
-                    check=True,
-                    capture_output=True,
-                )
-            except subprocess.CalledProcessError as err:
-                stderr = (err.stderr or "").strip()
-                snippet = stderr[-1000:] if stderr else "<empty stderr>"
-                raise RuntimeError(
-                    f"ClickHouse insert failed for {table}, rows={len(chunk_df)}, "
-                    f"chunk_range=[{start},{start + len(chunk_df)}), stderr={snippet}"
-                ) from err
-            if sleep_between_chunks_sec > 0:
-                time.sleep(sleep_between_chunks_sec)
+        if effective_chunk_rows <= 0:
+            effective_chunk_rows = len(part_df)
+        for start in range(0, len(part_df), effective_chunk_rows):
+            chunk_df = part_df.iloc[start : start + effective_chunk_rows]
+            chunk_plan.append((chunk_df, start, start + len(chunk_df)))
+
+    done_counter = 0
+
+    def _insert_one(chunk_df: pd.DataFrame, start: int, end: int) -> None:
+        nonlocal done_counter
+        csv_text = chunk_df.to_csv(index=False, header=False, na_rep="\\N")
+        try:
+            subprocess.run(
+                ["docker", "exec", "-i", container_name, "clickhouse-client", "--query", query],
+                input=csv_text,
+                text=True,
+                check=True,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError as err:
+            stderr = (err.stderr or "").strip()
+            snippet = stderr[-1000:] if stderr else "<empty stderr>"
+            raise RuntimeError(
+                f"ClickHouse insert failed for {table}, rows={len(chunk_df)}, "
+                f"chunk_range=[{start},{end}), stderr={snippet}"
+            ) from err
+        done_counter += 1
+        if total_chunks > 50 and done_counter % 100 == 0:
+            print(f"[clickhouse] {table} insert progress: {done_counter}/{total_chunks} chunks")
+        if sleep_between_chunks_sec > 0:
+            time.sleep(sleep_between_chunks_sec)
+
+    workers = max(1, int(insert_workers))
+    if workers == 1 or len(chunk_plan) <= 1:
+        for chunk_df, start, end in chunk_plan:
+            _insert_one(chunk_df, start, end)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(_insert_one, cdf, s, e) for cdf, s, e in chunk_plan]
+            for future in as_completed(futures):
+                future.result()
 
 
 def _get_checkpoint_dir(output_dir: Path, data_version: str) -> Path:
@@ -937,6 +1023,13 @@ def run_pipeline(args: argparse.Namespace) -> None:
     as_of = pd.to_datetime(args.as_of_date)
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
+    validate_stage_or_raise(
+        "scoreboard_input",
+        purchase_csv=args.purchase_csv,
+        overview_csv=args.overview_csv,
+        personnel_dir=args.personnel_dir,
+        nav_dir=args.nav_dir,
+    )
     checkpoint_dir = _get_checkpoint_dir(output_dir, args.data_version)
 
     # --formal-only: 不兼容 --resume（正式计算快速路径，无需断点续传）
@@ -1050,6 +1143,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     scoreboard_export_df.to_csv(scoreboard_csv, index=False, encoding="utf-8-sig")
     exclusion_detail.to_csv(exclusion_detail_csv, index=False, encoding="utf-8-sig")
     exclusion_summary.to_csv(exclusion_summary_csv, index=False, encoding="utf-8-sig")
+    validate_stage_or_raise("scoreboard_output", scoreboard_csv=scoreboard_csv)
     print(f"[scoreboard] CSV export done: elapsed={time.perf_counter() - t_csv:.2f}s")
 
     if not args.skip_sinks:
@@ -1156,13 +1250,23 @@ def run_pipeline(args: argparse.Namespace) -> None:
 
         # write clickhouse
         t_clickhouse = time.perf_counter()
+        ch_write_cfg = _resolve_clickhouse_write_config(
+            profile=args.clickhouse_write_profile,
+            target_fund_count=len(dim_base),
+            nav_row_count=len(nav_df),
+            period_row_count=len(period_df),
+            small_data_threshold_funds=args.small_data_threshold_funds,
+        )
+        ch_tables_to_write = _resolve_clickhouse_scope_tables(args.clickhouse_write_scope)
+        print(
+            "[clickhouse] write profile="
+            f"{ch_write_cfg.profile} "
+            f"(requested={args.clickhouse_write_profile}, funds={len(dim_base)}, "
+            f"nav_rows={len(nav_df)}, period_rows={len(period_df)})"
+        )
+        print(f"[clickhouse] write scope={args.clickhouse_write_scope}, tables={','.join(ch_tables_to_write)}")
         escaped_data_version = args.data_version.replace("\\", "\\\\").replace("'", "\\'")
-        for table in [
-            "fact_fund_nav_daily",
-            "fact_fund_return_period",
-            "fact_fund_metrics_snapshot",
-            "fact_fund_scoreboard_snapshot",
-        ]:
+        for table in ch_tables_to_write:
             full_table = f"{db.clickhouse_db}.{table}"
             count_text = _query_clickhouse_text_via_docker(
                 f"SELECT count() FROM {full_table} WHERE data_version = '{escaped_data_version}'",
@@ -1179,9 +1283,14 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 print(f"[clickhouse] cleanup skipped table={full_table} (no existing rows)")
 
         # DELETE 触发 mutation，需等待完成后再 INSERT，否则易 OOM
-        _wait_clickhouse_mutations(args.clickhouse_container, args.clickhouse_db, timeout_sec=120)
+        _wait_clickhouse_mutations(
+            args.clickhouse_container,
+            args.clickhouse_db,
+            timeout_sec=ch_write_cfg.wait_mutation_timeout_sec,
+            poll_interval_sec=ch_write_cfg.wait_mutation_poll_sec,
+        )
 
-        if not nav_df.empty:
+        if "fact_fund_nav_daily" in ch_tables_to_write and not nav_df.empty:
             nav_df = nav_df.copy()
             nav_df.insert(0, "data_version", args.data_version)
             nav_df.insert(1, "as_of_date", as_of.date())
@@ -1200,12 +1309,13 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 ],
                 args.clickhouse_container,
                 partition_group_cols=["nav_date"],
-                chunk_rows=5_000,
-                max_partition_groups_per_insert=1,
-                sleep_between_chunks_sec=0.5,
+                chunk_rows=ch_write_cfg.nav_chunk_rows,
+                max_partition_groups_per_insert=ch_write_cfg.max_partition_groups_per_insert,
+                sleep_between_chunks_sec=ch_write_cfg.nav_sleep_between_chunks_sec,
+                insert_workers=ch_write_cfg.insert_workers,
             )
 
-        if not period_df.empty:
+        if "fact_fund_return_period" in ch_tables_to_write and not period_df.empty:
             period_df = period_df.copy()
             period_df.insert(0, "data_version", args.data_version)
             period_df.insert(1, "as_of_date", as_of.date())
@@ -1224,11 +1334,12 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 ],
                 args.clickhouse_container,
                 partition_group_cols=["period_type", "period_end"],
-                chunk_rows=5_000,
-                max_partition_groups_per_insert=1,
+                chunk_rows=ch_write_cfg.period_chunk_rows,
+                max_partition_groups_per_insert=ch_write_cfg.max_partition_groups_per_insert,
+                insert_workers=ch_write_cfg.insert_workers,
             )
 
-        if not metric_df.empty:
+        if "fact_fund_metrics_snapshot" in ch_tables_to_write and not metric_df.empty:
             metric_insert = metric_df[metric_df["stale_nav_excluded"] == False].copy()
             metric_insert = metric_insert.drop(columns=["stale_nav_excluded"])
             metric_insert.insert(0, "data_version", args.data_version)
@@ -1241,9 +1352,10 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 f"{db.clickhouse_db}.fact_fund_metrics_snapshot",
                 CH_METRICS_COLS,
                 args.clickhouse_container,
+                insert_workers=ch_write_cfg.insert_workers,
             )
 
-        if not scoreboard.empty:
+        if "fact_fund_scoreboard_snapshot" in ch_tables_to_write and not scoreboard.empty:
             for col in CH_SCOREBOARD_COLS:
                 if col not in scoreboard.columns:
                     scoreboard[col] = None
@@ -1252,6 +1364,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 f"{db.clickhouse_db}.fact_fund_scoreboard_snapshot",
                 CH_SCOREBOARD_COLS,
                 args.clickhouse_container,
+                insert_workers=ch_write_cfg.insert_workers,
             )
         print(f"[scoreboard] ClickHouse write done: elapsed={time.perf_counter() - t_clickhouse:.2f}s")
     else:
@@ -1305,6 +1418,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--clickhouse-password", type=str, default="")
     parser.add_argument("--clickhouse-db", type=str, default="fund_analysis")
     parser.add_argument("--clickhouse-container", type=str, default="fund_clickhouse")
+    parser.add_argument(
+        "--clickhouse-write-profile",
+        type=str,
+        choices=["auto", "safe", "fast"],
+        default="auto",
+        help="ClickHouse 写入策略: auto(按数据量自动), safe(保守限速), fast(放开限速)",
+    )
+    parser.add_argument(
+        "--small-data-threshold-funds",
+        type=int,
+        default=200,
+        help="auto 模式下判定小数据量的基金数量阈值",
+    )
+    parser.add_argument(
+        "--clickhouse-write-scope",
+        type=str,
+        choices=["full", "verify_minimal"],
+        default="full",
+        help="ClickHouse 写入表范围: full(全部事实表) / verify_minimal(仅 nav_daily + scoreboard)",
+    )
     return parser
 
 

@@ -66,6 +66,11 @@ INTEGRITY_DETAILS_DIR="${ARTIFACTS_DIR}/trade_day_integrity_reports/details_${IN
 INTEGRITY_SUMMARY_CSV="${ARTIFACTS_DIR}/trade_day_integrity_reports/trade_day_integrity_summary_${INTEGRITY_START_DATE}_${INTEGRITY_END_DATE}.csv"
 COMPARE_SUMMARY_CSV="${ARTIFACTS_DIR}/fund_return_compare/summary.csv"
 SCOREBOARD_CSV="${SCOREBOARD_DIR}/fund_scoreboard_${DATA_VERSION}.csv"
+RUN_REPORT_STEPS_CSV="${ARTIFACTS_DIR}/run_report_steps.csv"
+RUN_REPORT_SUMMARY_CSV="${ARTIFACTS_DIR}/run_report_summary.csv"
+RUN_REPORT_MD="${ARTIFACTS_DIR}/run_report.md"
+CURRENT_STEP=""
+STEP_START_TS=0
 
 assert_file_exists() {
   local path="$1"
@@ -190,11 +195,120 @@ wait_clickhouse_ready() {
   done
 }
 
+start_step() {
+  CURRENT_STEP="$1"
+  STEP_START_TS="$(date +%s)"
+  echo "[full-run] ${CURRENT_STEP}"
+}
+
+finish_step() {
+  local status="$1"
+  local end_ts duration
+  end_ts="$(date +%s)"
+  duration=$((end_ts - STEP_START_TS))
+  printf '%s,%s,%s\n' "${CURRENT_STEP}" "${status}" "${duration}" >>"${RUN_REPORT_STEPS_CSV}"
+  CURRENT_STEP=""
+}
+
+generate_run_report() {
+  "${PYTHON_BIN}" - <<'PY' "${RUN_REPORT_STEPS_CSV}" "${RUN_REPORT_SUMMARY_CSV}" "${RUN_REPORT_MD}" "${FUND_ETL_DIR}" "${LOGS_DIR}" "${FILTER_RESULT_CSV}" "${FILTERED_PURCHASE_CSV}"
+from pathlib import Path
+import json
+import sys
+import pandas as pd
+
+steps_csv = Path(sys.argv[1])
+summary_csv = Path(sys.argv[2])
+report_md = Path(sys.argv[3])
+fund_etl_dir = Path(sys.argv[4])
+logs_dir = Path(sys.argv[5])
+filter_result_csv = Path(sys.argv[6])
+filtered_purchase_csv = Path(sys.argv[7])
+
+if not steps_csv.exists():
+    raise SystemExit(0)
+
+steps = pd.read_csv(steps_csv, dtype=str)
+steps["duration_seconds"] = pd.to_numeric(steps["duration_seconds"], errors="coerce").fillna(0).astype(int)
+total_steps = len(steps)
+ok_steps = int((steps["status"] == "success").sum())
+success_rate = (ok_steps / total_steps * 100.0) if total_steps else 0.0
+
+error_stage_count: dict[str, int] = {}
+if logs_dir.exists():
+    for p in sorted(logs_dir.glob("*.jsonl")):
+        with p.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                stage = str(rec.get("stage", "unknown")).strip() or "unknown"
+                error_stage_count[stage] = error_stage_count.get(stage, 0) + 1
+
+purchase_before = None
+purchase_after = None
+filtered_yes = None
+if (fund_etl_dir / "fund_purchase.csv").exists():
+    purchase_before = len(pd.read_csv(fund_etl_dir / "fund_purchase.csv", dtype=str, encoding="utf-8-sig"))
+if filtered_purchase_csv.exists():
+    purchase_after = len(pd.read_csv(filtered_purchase_csv, dtype=str, encoding="utf-8-sig"))
+if filter_result_csv.exists():
+    fdf = pd.read_csv(filter_result_csv, dtype=str, encoding="utf-8-sig")
+    if "是否过滤" in fdf.columns:
+        filtered_yes = int((fdf["是否过滤"] == "是").sum())
+
+summary = pd.DataFrame(
+    [
+        {"指标": "总步骤数", "值": total_steps},
+        {"指标": "成功步骤数", "值": ok_steps},
+        {"指标": "步骤成功率(%)", "值": round(success_rate, 2)},
+        {"指标": "过滤前基金数", "值": purchase_before},
+        {"指标": "过滤后基金数", "值": purchase_after},
+        {"指标": "被过滤基金数", "值": filtered_yes},
+    ]
+)
+summary.to_csv(summary_csv, index=False, encoding="utf-8-sig")
+
+err_text = "无"
+if error_stage_count:
+    err_text = "; ".join(f"{k}:{v}" for k, v in sorted(error_stage_count.items()))
+
+lines = [
+    "# 运行报告汇总",
+    "",
+    "## 验收结论",
+    f"- 步骤成功率: {ok_steps}/{total_steps} ({success_rate:.2f}%)",
+    f"- 过滤前后数量: {purchase_before} -> {purchase_after}",
+    f"- 被过滤基金数: {filtered_yes}",
+    f"- 异常分布: {err_text}",
+    "",
+    "## 步骤耗时",
+]
+for _, row in steps.iterrows():
+    lines.append(f"- {row['step']}: {row['status']} ({int(row['duration_seconds'])}s)")
+report_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+}
+
+on_error() {
+  if [[ -n "${CURRENT_STEP}" ]]; then
+    finish_step "failed"
+  fi
+  generate_run_report
+}
+
+trap on_error ERR
+
 echo "[full-run] project_root=${PROJECT_ROOT}"
 echo "[full-run] run_id=${RUN_ID}"
 echo "[full-run] data_version=${DATA_VERSION}"
 
 mkdir -p "${FUND_ETL_DIR}" "${LOGS_DIR}" "${ARTIFACTS_DIR}" "${SCOREBOARD_DIR}" "${CHECKPOINT_DIR}"
+printf 'step,status,duration_seconds\n' >"${RUN_REPORT_STEPS_CSV}"
 
 if [[ -n "${LOCAL_PURCHASE_CSV}" ]]; then
   if [[ ! -f "${LOCAL_PURCHASE_CSV}" ]]; then
@@ -208,12 +322,14 @@ if [[ -n "${LOCAL_PURCHASE_CSV}" ]]; then
   echo "[full-run] local purchase csv mode enabled: ${LOCAL_PURCHASE_CSV}"
 fi
 
-echo "[full-run] step 1/7: start db infra"
+start_step "step1_start_db"
 assert_file_exists "${WORKSPACE_ROOT}/fund_db_infra/docker-compose.yml"
 docker_compose_cmd -f "${WORKSPACE_ROOT}/fund_db_infra/docker-compose.yml" up -d
 wait_mysql_ready
 wait_clickhouse_ready
+finish_step "success"
 
+start_step "step2_fund_etl"
 if has_checkpoint "step2_fund_etl"; then
   echo "[full-run] step 2/7: checkpoint hit, skip fund_etl"
   assert_csv_has_rows "${FUND_ETL_DIR}/fund_purchase.csv"
@@ -266,7 +382,9 @@ else
   assert_dir_has_csv "${FUND_ETL_DIR}/fund_cum_return_by_code"
   mark_checkpoint "step2_fund_etl"
 fi
+finish_step "success"
 
+start_step "step3_adjusted_nav"
 if has_checkpoint "step3_adjusted_nav"; then
   echo "[full-run] step 3/7: checkpoint hit, skip adjusted nav"
   assert_dir_has_csv "${FUND_ETL_DIR}/fund_adjusted_nav_by_code"
@@ -282,7 +400,9 @@ else
   assert_dir_has_csv "${FUND_ETL_DIR}/fund_adjusted_nav_by_code"
   mark_checkpoint "step3_adjusted_nav"
 fi
+finish_step "success"
 
+start_step "step4_integrity"
 if has_checkpoint "step4_integrity"; then
   echo "[full-run] step 4/7: checkpoint hit, skip trade-day integrity"
   assert_csv_has_rows "${INTEGRITY_SUMMARY_CSV}"
@@ -299,7 +419,9 @@ else
   assert_dir_exists "${INTEGRITY_DETAILS_DIR}"
   mark_checkpoint "step4_integrity"
 fi
+finish_step "success"
 
+start_step "step5_compare"
 if has_checkpoint "step5_compare"; then
   echo "[full-run] step 5/7: checkpoint hit, skip compare adjusted nav vs cum return"
   assert_csv_has_rows "${COMPARE_SUMMARY_CSV}"
@@ -314,7 +436,9 @@ else
   assert_dir_exists "${ARTIFACTS_DIR}/fund_return_compare/details"
   mark_checkpoint "step5_compare"
 fi
+finish_step "success"
 
+start_step "step6_filter"
 if has_checkpoint "step6_filter"; then
   echo "[full-run] step 6/7: checkpoint hit, skip fund filter"
   assert_csv_has_rows "${FILTER_RESULT_CSV}"
@@ -330,43 +454,20 @@ else
   assert_csv_has_rows "${FILTER_RESULT_CSV}"
   mark_checkpoint "step6_filter"
 fi
+finish_step "success"
 
+start_step "step6b_filtered_purchase"
 if has_checkpoint "step6b_filtered_purchase"; then
   echo "[full-run] step 6b: checkpoint hit, skip filtered purchase generation"
 else
-  "${PYTHON_BIN}" - <<'PY' "${FUND_ETL_DIR}/fund_purchase.csv" "${FILTER_RESULT_CSV}" "${FILTERED_PURCHASE_CSV}"
-from pathlib import Path
-import sys
-
-import pandas as pd
-
-purchase_csv = Path(sys.argv[1])
-filter_csv = Path(sys.argv[2])
-output_csv = Path(sys.argv[3])
-
-purchase_df = pd.read_csv(purchase_csv, dtype={"基金代码": str}, encoding="utf-8-sig")
-filter_df = pd.read_csv(filter_csv, dtype={"基金编码": str}, encoding="utf-8-sig")
-
-if "基金代码" not in purchase_df.columns:
-    raise ValueError(f"missing 基金代码 column: {purchase_csv}")
-if "基金编码" not in filter_df.columns or "是否过滤" not in filter_df.columns:
-    raise ValueError(f"missing 基金编码/是否过滤 columns: {filter_csv}")
-
-purchase_df["基金代码"] = purchase_df["基金代码"].map(lambda v: str(v).strip().zfill(6))
-filter_df["基金编码"] = filter_df["基金编码"].map(lambda v: str(v).strip().zfill(6))
-
-kept_codes = set(filter_df.loc[filter_df["是否过滤"] == "否", "基金编码"].dropna().tolist())
-kept_df = purchase_df[purchase_df["基金代码"].isin(kept_codes)].copy()
-if kept_df.empty:
-    raise ValueError("all funds are filtered out; cannot continue step10 pipeline")
-
-kept_df.to_csv(output_csv, index=False, encoding="utf-8-sig")
-print(f"filtered_purchase_rows={len(kept_df)}")
-print(f"filtered_purchase_csv={output_csv}")
-PY
+  "${PYTHON_BIN}" src/transforms/build_filtered_purchase_csv.py \
+    --purchase-csv "${FUND_ETL_DIR}/fund_purchase.csv" \
+    --filter-csv "${FILTER_RESULT_CSV}" \
+    --output-csv "${FILTERED_PURCHASE_CSV}"
   mark_checkpoint "step6b_filtered_purchase"
 fi
 assert_csv_has_rows "${FILTERED_PURCHASE_CSV}"
+finish_step "success"
 
 AS_OF_DATE="$("${PYTHON_BIN}" - <<'PY' "${FUND_ETL_DIR}/fund_adjusted_nav_by_code"
 from pathlib import Path
@@ -395,6 +496,7 @@ print(max_date.strftime("%Y-%m-%d"))
 PY
 )"
 
+start_step "step7_scoreboard"
 if has_checkpoint "step7_scoreboard"; then
   echo "[full-run] step 7/7: checkpoint hit, skip pipeline scoreboard -> db"
   assert_csv_has_rows "${SCOREBOARD_CSV}"
@@ -413,6 +515,9 @@ else
   assert_csv_has_rows "${SCOREBOARD_CSV}"
   mark_checkpoint "step7_scoreboard"
 fi
+finish_step "success"
+
+generate_run_report
 
 echo "[full-run] OK"
 echo "[full-run] run_id=${RUN_ID}"
@@ -421,3 +526,4 @@ echo "[full-run] integrity_summary=${INTEGRITY_SUMMARY_CSV}"
 echo "[full-run] filtered_fund_csv=${FILTER_RESULT_CSV}"
 echo "[full-run] filtered_purchase_csv=${FILTERED_PURCHASE_CSV}"
 echo "[full-run] scoreboard_csv=${SCOREBOARD_CSV}"
+echo "[full-run] run_report=${RUN_REPORT_MD}"

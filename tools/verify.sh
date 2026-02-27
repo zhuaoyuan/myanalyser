@@ -189,8 +189,14 @@ MYSQL_DDL="${DB_INFRA_DIR}/sql/mysql_schema.sql"
 CLICKHOUSE_DDL="${DB_INFRA_DIR}/sql/clickhouse_schema.sql"
 FILTER_START_DATE="${FILTER_START_DATE:-2023-01-01}"
 FILTER_MAX_ABS_DEVIATION="${FILTER_MAX_ABS_DEVIATION:-0.02}"
+VERIFY_SCOREBOARD_CH_WRITE_PROFILE="${VERIFY_SCOREBOARD_CH_WRITE_PROFILE:-fast}"
 FILTER_RESULT_CSV="${ARTIFACTS_DIR}/filtered_fund_candidates.csv"
 FILTERED_PURCHASE_CSV="${FUND_ETL_DIR}/fund_purchase_for_step10_filtered.csv"
+RUN_REPORT_STEPS_CSV="${ARTIFACTS_DIR}/run_report_steps.csv"
+RUN_REPORT_SUMMARY_CSV="${ARTIFACTS_DIR}/run_report_summary.csv"
+RUN_REPORT_MD="${ARTIFACTS_DIR}/run_report.md"
+CURRENT_STEP=""
+STEP_START_TS=0
 
 assert_file_exists() {
   local path="$1"
@@ -279,36 +285,149 @@ wait_clickhouse_ready() {
   done
 }
 
+start_step() {
+  CURRENT_STEP="$1"
+  STEP_START_TS="$(date +%s)"
+  echo "[verify] ${CURRENT_STEP}"
+}
+
+finish_step() {
+  local status="$1"
+  local end_ts duration
+  end_ts="$(date +%s)"
+  duration=$((end_ts - STEP_START_TS))
+  printf '%s,%s,%s\n' "${CURRENT_STEP}" "${status}" "${duration}" >>"${RUN_REPORT_STEPS_CSV}"
+  CURRENT_STEP=""
+}
+
+generate_run_report() {
+  "${PYTHON_BIN}" - <<'PY' "${RUN_REPORT_STEPS_CSV}" "${RUN_REPORT_SUMMARY_CSV}" "${RUN_REPORT_MD}" "${FUND_ETL_DIR}" "${LOGS_DIR}" "${FILTER_RESULT_CSV}" "${FILTERED_PURCHASE_CSV}"
+from pathlib import Path
+import json
+import sys
+import pandas as pd
+
+steps_csv = Path(sys.argv[1])
+summary_csv = Path(sys.argv[2])
+report_md = Path(sys.argv[3])
+fund_etl_dir = Path(sys.argv[4])
+logs_dir = Path(sys.argv[5])
+filter_result_csv = Path(sys.argv[6])
+filtered_purchase_csv = Path(sys.argv[7])
+
+if not steps_csv.exists():
+    raise SystemExit(0)
+
+steps = pd.read_csv(steps_csv, dtype=str)
+steps["duration_seconds"] = pd.to_numeric(steps["duration_seconds"], errors="coerce").fillna(0).astype(int)
+total_steps = len(steps)
+ok_steps = int((steps["status"] == "success").sum())
+success_rate = (ok_steps / total_steps * 100.0) if total_steps else 0.0
+
+error_stage_count: dict[str, int] = {}
+if logs_dir.exists():
+    for p in sorted(logs_dir.glob("*.jsonl")):
+        with p.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                stage = str(rec.get("stage", "unknown")).strip() or "unknown"
+                error_stage_count[stage] = error_stage_count.get(stage, 0) + 1
+
+purchase_before = None
+purchase_after = None
+filtered_yes = None
+if (fund_etl_dir / "fund_purchase.csv").exists():
+    purchase_before = len(pd.read_csv(fund_etl_dir / "fund_purchase.csv", dtype=str, encoding="utf-8-sig"))
+if filtered_purchase_csv.exists():
+    purchase_after = len(pd.read_csv(filtered_purchase_csv, dtype=str, encoding="utf-8-sig"))
+if filter_result_csv.exists():
+    fdf = pd.read_csv(filter_result_csv, dtype=str, encoding="utf-8-sig")
+    if "是否过滤" in fdf.columns:
+        filtered_yes = int((fdf["是否过滤"] == "是").sum())
+
+summary = pd.DataFrame(
+    [
+        {"指标": "总步骤数", "值": total_steps},
+        {"指标": "成功步骤数", "值": ok_steps},
+        {"指标": "步骤成功率(%)", "值": round(success_rate, 2)},
+        {"指标": "过滤前基金数", "值": purchase_before},
+        {"指标": "过滤后基金数", "值": purchase_after},
+        {"指标": "被过滤基金数", "值": filtered_yes},
+    ]
+)
+summary.to_csv(summary_csv, index=False, encoding="utf-8-sig")
+
+err_text = "无"
+if error_stage_count:
+    err_text = "; ".join(f"{k}:{v}" for k, v in sorted(error_stage_count.items()))
+
+lines = [
+    "# 运行报告汇总",
+    "",
+    "## 验收结论",
+    f"- 步骤成功率: {ok_steps}/{total_steps} ({success_rate:.2f}%)",
+    f"- 过滤前后数量: {purchase_before} -> {purchase_after}",
+    f"- 被过滤基金数: {filtered_yes}",
+    f"- 异常分布: {err_text}",
+    "",
+    "## 步骤耗时",
+]
+for _, row in steps.iterrows():
+    lines.append(f"- {row['step']}: {row['status']} ({int(row['duration_seconds'])}s)")
+report_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+}
+
+on_error() {
+  if [[ -n "${CURRENT_STEP}" ]]; then
+    finish_step "failed"
+  fi
+  generate_run_report
+}
+
+trap on_error ERR
+
 echo "[verify] project_root=${PROJECT_ROOT}"
 echo "[verify] run_id=${RUN_ID}"
 echo "[verify] data_version=${DATA_VERSION}"
 
 mkdir -p "${FUND_ETL_DIR}" "${LOGS_DIR}" "${ARTIFACTS_DIR}" "${SCOREBOARD_DIR}" "${BACKTEST_DIR}"
+printf 'step,status,duration_seconds\n' >"${RUN_REPORT_STEPS_CSV}"
 
-echo "[verify] step 1/11: unit tests"
+start_step "step1_unit_tests"
 "${PYTHON_BIN}" -m unittest discover -s tests -p "test_*.py" -v
+finish_step "success"
 
-echo "[verify] step 2/11: core CLI smoke tests (5 CLIs)"
+start_step "step2_core_cli_smoke"
 "${PYTHON_BIN}" -m unittest -v \
   tests.test_cli_integration.CoreCliIntegrationTest.test_fund_etl_cli_run_id_layout \
   tests.test_cli_integration.CoreCliIntegrationTest.test_pipeline_cli_smoke_skip_sinks_with_run_id_layout \
   tests.test_cli_integration.CoreCliIntegrationTest.test_backtest_cli_smoke_with_run_id_layout \
   tests.test_cli_integration.CoreCliIntegrationTest.test_compare_cli_with_run_id_layout \
   tests.test_cli_integration.CoreCliIntegrationTest.test_check_trade_day_integrity_cli_with_run_id_layout
+finish_step "success"
 
-echo "[verify] step 3/11: start db infra"
+start_step "step3_start_db"
 assert_file_exists "${WORKSPACE_ROOT}/fund_db_infra/docker-compose.yml"
 docker_compose_cmd -f "${WORKSPACE_ROOT}/fund_db_infra/docker-compose.yml" up -d
 wait_mysql_ready
 wait_clickhouse_ready
+finish_step "success"
 
-echo "[verify] step 4/11: fund_etl verify + step1"
+start_step "step4_fund_etl_verify_step1"
 "${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode verify
 "${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step1
 assert_file_exists "${FUND_ETL_DIR}/fund_purchase.csv"
 assert_csv_has_rows "${FUND_ETL_DIR}/fund_purchase.csv"
+finish_step "success"
 
-echo "[verify] step 5/11: sampling 21 funds (top20 + 163402)"
+start_step "step5_sampling_purchase"
 RUN_ID="${RUN_ID}" "${PYTHON_BIN}" - <<'PY'
 from pathlib import Path
 import os
@@ -347,8 +466,9 @@ if sample_df.shape[0] != 21:
 sample_df.to_csv(purchase_csv, index=False, encoding="utf-8-sig")
 PY
 assert_csv_has_rows "${FUND_ETL_DIR}/fund_purchase.csv"
+finish_step "success"
 
-echo "[verify] step 6/11: fund_etl step2~step7 on sampled funds"
+start_step "step6_fund_etl_step2_to_step7"
 "${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step2 --max-workers 8
 "${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step3
 "${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step4
@@ -361,8 +481,9 @@ assert_dir_has_csv "${FUND_ETL_DIR}/fund_bonus_by_code"
 assert_dir_has_csv "${FUND_ETL_DIR}/fund_split_by_code"
 assert_dir_has_csv "${FUND_ETL_DIR}/fund_personnel_by_code"
 assert_dir_has_csv "${FUND_ETL_DIR}/fund_cum_return_by_code"
+finish_step "success"
 
-echo "[verify] step 7/11: calculate adjusted nav"
+start_step "step7_adjusted_nav"
 "${PYTHON_BIN}" src/adjusted_nav_tool.py \
   --nav-dir "${FUND_ETL_DIR}/fund_nav_by_code" \
   --bonus-dir "${FUND_ETL_DIR}/fund_bonus_by_code" \
@@ -371,8 +492,9 @@ echo "[verify] step 7/11: calculate adjusted nav"
   --allow-missing-event-until 2020-12-31 \
   --fail-log "${LOGS_DIR}/failed_adjusted_nav.jsonl"
 assert_dir_has_csv "${FUND_ETL_DIR}/fund_adjusted_nav_by_code"
+finish_step "success"
 
-echo "[verify] step 8/11: data integrity reports"
+start_step "step8_integrity"
 "${PYTHON_BIN}" src/check_trade_day_data_integrity.py \
   --base-dir "${FUND_ETL_DIR}" \
   --start-date 2025-01-01 \
@@ -386,16 +508,18 @@ if [[ ! -f "${SUMMARY_CSV}" ]]; then
   exit 1
 fi
 assert_csv_has_rows "${SUMMARY_CSV}"
+finish_step "success"
 
-echo "[verify] step 9/11: compare adjusted nav vs cum return"
+start_step "step9_compare_returns"
 "${PYTHON_BIN}" src/compare_adjusted_nav_and_cum_return.py \
   --base-dir "${FUND_ETL_DIR}" \
   --output-dir "${ARTIFACTS_DIR}/fund_return_compare" \
   --error-log "${LOGS_DIR}/compare_adjusted_nav_cum_return_errors.jsonl"
 assert_csv_has_rows "${ARTIFACTS_DIR}/fund_return_compare/summary.csv"
 assert_dir_exists "${ARTIFACTS_DIR}/fund_return_compare/details"
+finish_step "success"
 
-echo "[verify] step 9.5/11: filter fund list for next step"
+start_step "step9_5_filter_and_filtered_purchase"
 "${PYTHON_BIN}" src/filter_funds_for_next_step.py \
   --base-dir "${FUND_ETL_DIR}" \
   --compare-details-dir "${ARTIFACTS_DIR}/fund_return_compare/details" \
@@ -405,39 +529,14 @@ echo "[verify] step 9.5/11: filter fund list for next step"
   --output-csv "${FILTER_RESULT_CSV}"
 assert_csv_has_rows "${FILTER_RESULT_CSV}"
 
-"${PYTHON_BIN}" - <<'PY' "${FUND_ETL_DIR}/fund_purchase.csv" "${FILTER_RESULT_CSV}" "${FILTERED_PURCHASE_CSV}"
-from pathlib import Path
-import sys
-
-import pandas as pd
-
-purchase_csv = Path(sys.argv[1])
-filter_csv = Path(sys.argv[2])
-output_csv = Path(sys.argv[3])
-
-purchase_df = pd.read_csv(purchase_csv, dtype={"基金代码": str}, encoding="utf-8-sig")
-filter_df = pd.read_csv(filter_csv, dtype={"基金编码": str}, encoding="utf-8-sig")
-
-if "基金代码" not in purchase_df.columns:
-    raise ValueError(f"missing 基金代码 column: {purchase_csv}")
-if "基金编码" not in filter_df.columns or "是否过滤" not in filter_df.columns:
-    raise ValueError(f"missing 基金编码/是否过滤 columns: {filter_csv}")
-
-purchase_df["基金代码"] = purchase_df["基金代码"].map(lambda v: str(v).strip().zfill(6))
-filter_df["基金编码"] = filter_df["基金编码"].map(lambda v: str(v).strip().zfill(6))
-
-kept_codes = set(filter_df.loc[filter_df["是否过滤"] == "否", "基金编码"].dropna().tolist())
-kept_df = purchase_df[purchase_df["基金代码"].isin(kept_codes)].copy()
-if kept_df.empty:
-    raise ValueError("all funds are filtered out; cannot continue step10 pipeline")
-
-kept_df.to_csv(output_csv, index=False, encoding="utf-8-sig")
-print(f"filtered_purchase_rows={len(kept_df)}")
-print(f"filtered_purchase_csv={output_csv}")
-PY
+"${PYTHON_BIN}" src/transforms/build_filtered_purchase_csv.py \
+  --purchase-csv "${FUND_ETL_DIR}/fund_purchase.csv" \
+  --filter-csv "${FILTER_RESULT_CSV}" \
+  --output-csv "${FILTERED_PURCHASE_CSV}"
 assert_csv_has_rows "${FILTERED_PURCHASE_CSV}"
+finish_step "success"
 
-echo "[verify] step 10/11: pipeline scoreboard -> db + backtest"
+start_step "step10_scoreboard_and_backtest"
 AS_OF_DATE="$("${PYTHON_BIN}" - <<'PY' "${FUND_ETL_DIR}/fund_adjusted_nav_by_code"
 from pathlib import Path
 import sys
@@ -465,6 +564,7 @@ print(max_date.strftime("%Y-%m-%d"))
 PY
 )"
 
+STEP10_SCOREBOARD_START_TS="$(date +%s)"
 "${PYTHON_BIN}" src/pipeline_scoreboard.py \
   --purchase-csv "${FILTERED_PURCHASE_CSV}" \
   --overview-csv "${FUND_ETL_DIR}/fund_overview.csv" \
@@ -484,10 +584,15 @@ PY
   --mysql-password your_strong_password \
   --mysql-db fund_analysis \
   --clickhouse-db fund_analysis \
-  --clickhouse-container fund_clickhouse
+  --clickhouse-container fund_clickhouse \
+  --clickhouse-write-profile "${VERIFY_SCOREBOARD_CH_WRITE_PROFILE}" \
+  --clickhouse-write-scope verify_minimal
+STEP10_SCOREBOARD_END_TS="$(date +%s)"
+echo "[verify] step10 scoreboard_seconds=$((STEP10_SCOREBOARD_END_TS - STEP10_SCOREBOARD_START_TS))"
 
 assert_csv_has_rows "${SCOREBOARD_DIR}/fund_scoreboard_${DATA_VERSION}.csv"
 
+STEP10_BACKTEST_START_TS="$(date +%s)"
 "${PYTHON_BIN}" src/backtest_portfolio.py \
   --start-date 2025-01-01 \
   --end-date 2025-12-31 \
@@ -501,11 +606,14 @@ assert_csv_has_rows "${SCOREBOARD_DIR}/fund_scoreboard_${DATA_VERSION}.csv"
   --nav-data-version "${DATA_VERSION}" \
   --clickhouse-db fund_analysis \
   --clickhouse-container fund_clickhouse
+STEP10_BACKTEST_END_TS="$(date +%s)"
+echo "[verify] step10 backtest_seconds=$((STEP10_BACKTEST_END_TS - STEP10_BACKTEST_START_TS))"
 
 assert_csv_has_rows "${BACKTEST_DIR}/backtest_window_detail.csv"
 assert_file_exists "${BACKTEST_DIR}/backtest_report.md"
+finish_step "success"
 
-echo "[verify] step 11/11: recalc scoreboard verification (must all pass)"
+start_step "step11_scoreboard_recalc_verify"
 "${PYTHON_BIN}" src/verify_scoreboard_recalc.py \
   --scoreboard-csv "${SCOREBOARD_DIR}/fund_scoreboard_${DATA_VERSION}.csv" \
   --fund-etl-dir "${FUND_ETL_DIR}" \
@@ -530,6 +638,9 @@ if not failed_df.empty:
     raise SystemExit(1)
 print(f"recalc verification all passed: funds={len(df)}")
 PY
+finish_step "success"
+
+generate_run_report
 
 echo "[verify] OK"
 echo "[verify] run_id=${RUN_ID}"
@@ -538,3 +649,4 @@ echo "[verify] integrity_summary=${SUMMARY_CSV}"
 echo "[verify] scoreboard_csv=${SCOREBOARD_DIR}/fund_scoreboard_${DATA_VERSION}.csv"
 echo "[verify] backtest_report=${BACKTEST_DIR}/backtest_report.md"
 echo "[verify] scoreboard_recheck_summary=${ARTIFACTS_DIR}/scoreboard_recheck/summary.csv"
+echo "[verify] run_report=${RUN_REPORT_MD}"

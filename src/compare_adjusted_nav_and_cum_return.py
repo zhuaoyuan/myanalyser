@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+from validators.validate_pipeline_artifacts import validate_stage_or_raise
 
 SUMMARY_COLUMNS = [
     "基金代码",
@@ -293,6 +294,11 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
+    validate_stage_or_raise(
+        "compare_input",
+        adjusted_nav_dir=args.base_dir / "fund_adjusted_nav_by_code",
+        cum_return_dir=args.base_dir / "fund_cum_return_by_code",
+    )
     result = compare_adjusted_nav_and_cum_return_with_error_log(
         base_dir=args.base_dir,
         output_dir=args.output_dir,

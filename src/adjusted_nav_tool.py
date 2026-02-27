@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+from validators.validate_pipeline_artifacts import validate_stage_or_raise
 
 OUTPUT_COLUMNS = ["基金代码", "净值日期", "单位净值", "复权净值", "cumulative_factor"]
 
@@ -275,6 +276,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = _build_parser().parse_args()
+    validate_stage_or_raise(
+        "adjusted_nav_input",
+        nav_dir=args.nav_dir,
+        bonus_dir=args.bonus_dir,
+        split_dir=args.split_dir,
+    )
     allow_missing_event_until = None
     if args.allow_missing_event_until:
         parsed = pd.to_datetime(args.allow_missing_event_until, errors="coerce")

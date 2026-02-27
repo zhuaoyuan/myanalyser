@@ -12,6 +12,7 @@ from scoreboard_metrics import (
     safe_code,
     window_metrics,
 )
+from validators.validate_pipeline_artifacts import validate_stage_or_raise
 
 DEFAULT_MAX_INPUT_ROWS = 200
 DETAIL_COLUMNS = ["核验数据项名称", "原结果", "新结果", "核验是否通过"]
@@ -135,6 +136,11 @@ def run_verification(
     output_dir: Path,
     max_input_rows: int = DEFAULT_MAX_INPUT_ROWS,
 ) -> dict[str, Path]:
+    validate_stage_or_raise(
+        "verify_scoreboard_recalc_input",
+        scoreboard_csv=scoreboard_csv,
+        nav_dir=fund_etl_dir / "fund_adjusted_nav_by_code",
+    )
     scoreboard_df = pd.read_csv(scoreboard_csv, dtype={"基金代码": str}, encoding="utf-8-sig")
     if scoreboard_df.shape[0] > max_input_rows:
         raise ValueError(

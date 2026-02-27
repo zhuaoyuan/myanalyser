@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from project_paths import project_root
+from validators.validate_pipeline_artifacts import validate_stage_or_raise
 
 
 SUMMARY_COLUMNS = ["基金编码", "数据完整比例"]
@@ -130,6 +131,13 @@ def main() -> None:
         raise FileNotFoundError(f"未找到文件: {overview_csv}")
     if not trade_dates_csv.is_file():
         raise FileNotFoundError(f"未找到交易日历文件: {trade_dates_csv}")
+
+    validate_stage_or_raise(
+        "integrity_input",
+        adjusted_nav_dir=fund_dir,
+        overview_csv=overview_csv,
+        trade_dates_csv=trade_dates_csv,
+    )
 
     trade_days = load_trade_days(trade_dates_csv, args.start_date, args.end_date)
     eligible_codes = load_eligible_fund_codes(overview_csv, args.start_date)

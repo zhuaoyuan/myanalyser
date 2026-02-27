@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 import pandas as pd
+from validators.validate_pipeline_artifacts import validate_stage_or_raise
 
 
 OUTPUT_COLUMNS = ["基金编码", "是否过滤", "过滤原因"]
@@ -163,6 +164,15 @@ def main() -> None:
     args = parse_args()
     base_dir = args.base_dir.resolve()
     output_csv = args.output_csv.resolve() if args.output_csv else (base_dir / "filtered_fund_candidates.csv")
+    validate_stage_or_raise(
+        "filter_input",
+        purchase_csv=base_dir / "fund_purchase.csv",
+        overview_csv=base_dir / "fund_overview.csv",
+        nav_dir=base_dir / "fund_nav_by_code",
+        adjusted_nav_dir=base_dir / "fund_adjusted_nav_by_code",
+        compare_details_dir=args.compare_details_dir.resolve(),
+        integrity_details_dir=args.integrity_details_dir.resolve(),
+    )
 
     result_df = filter_funds_for_next_step(
         purchase_csv=base_dir / "fund_purchase.csv",
@@ -176,6 +186,7 @@ def main() -> None:
     )
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     result_df.to_csv(output_csv, index=False, encoding="utf-8-sig")
+    validate_stage_or_raise("filtered_candidates_output", filter_csv=output_csv)
     print(f"输出文件: {output_csv}")
     print(f"总基金数: {len(result_df)}")
     print(f"过滤基金数: {(result_df['是否过滤'] == '是').sum()}")

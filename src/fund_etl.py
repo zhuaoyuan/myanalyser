@@ -13,6 +13,7 @@ from typing import Callable, Iterable, Sequence
 import pandas as pd
 
 from project_paths import default_run_id, project_root
+from validators.validate_pipeline_artifacts import validate_stage_or_raise
 
 try:
     import akshare as ak
@@ -853,6 +854,7 @@ def main() -> None:
         print(f"[step1] rows={len(df)} -> {paths['purchase_csv']}")
 
     if args.mode in {"step2", "all"}:
+        validate_stage_or_raise("fund_etl_step2_input", purchase_csv=paths["purchase_csv"])
         summary = run_step2_overview(
             purchase_csv=paths["purchase_csv"],
             overview_csv=paths["overview_csv"],
@@ -864,6 +866,7 @@ def main() -> None:
         print(f"[step2] {summary}")
 
     if args.mode in {"step3", "all"}:
+        validate_stage_or_raise("fund_etl_step3_input", purchase_csv=paths["purchase_csv"])
         summary = run_step3_nav(
             purchase_csv=paths["purchase_csv"],
             nav_dir=paths["nav_dir"],
@@ -875,6 +878,7 @@ def main() -> None:
         print(f"[step3] {summary}")
 
     if args.mode in {"step4", "all"}:
+        validate_stage_or_raise("fund_etl_step4_input", purchase_csv=paths["purchase_csv"])
         summary = run_step4_bonus(
             purchase_csv=paths["purchase_csv"],
             bonus_dir=paths["bonus_dir"],
@@ -885,6 +889,7 @@ def main() -> None:
         print(f"[step4] {summary}")
 
     if args.mode in {"step5", "all"}:
+        validate_stage_or_raise("fund_etl_step5_input", purchase_csv=paths["purchase_csv"])
         summary = run_step5_split(
             purchase_csv=paths["purchase_csv"],
             split_dir=paths["split_dir"],
@@ -895,6 +900,7 @@ def main() -> None:
         print(f"[step5] {summary}")
 
     if args.mode in {"step6", "all"}:
+        validate_stage_or_raise("fund_etl_step6_input", purchase_csv=paths["purchase_csv"])
         summary = run_step6_personnel(
             purchase_csv=paths["purchase_csv"],
             personnel_dir=paths["personnel_dir"],
@@ -905,6 +911,7 @@ def main() -> None:
         print(f"[step6] {summary}")
 
     if args.mode in {"step7", "all"}:
+        validate_stage_or_raise("fund_etl_step7_input", purchase_csv=paths["purchase_csv"])
         summary = run_step7_cum_return(
             purchase_csv=paths["purchase_csv"],
             cum_return_dir=paths["cum_return_dir"],
@@ -915,6 +922,7 @@ def main() -> None:
         print(f"[step7] {summary}")
 
     if args.mode in {"retry-overview", "retry-all"}:
+        validate_stage_or_raise("fund_etl_step2_input", purchase_csv=paths["purchase_csv"])
         failed_codes = _load_failed_codes([paths["fail_overview_log"]], stage="step2_overview")
         summary = run_step2_overview(
             purchase_csv=paths["purchase_csv"],
@@ -928,6 +936,7 @@ def main() -> None:
         print(f"[retry-overview] failed_codes={len(failed_codes)} summary={summary}")
 
     if args.mode in {"retry-nav", "retry-all"}:
+        validate_stage_or_raise("fund_etl_step3_input", purchase_csv=paths["purchase_csv"])
         failed_codes = _load_failed_codes([paths["fail_nav_log"]], stage="step3_nav")
         summary = run_step3_nav(
             purchase_csv=paths["purchase_csv"],
@@ -941,6 +950,7 @@ def main() -> None:
         print(f"[retry-nav] failed_codes={len(failed_codes)} summary={summary}")
 
     if args.mode in {"retry-bonus", "retry-all"}:
+        validate_stage_or_raise("fund_etl_step4_input", purchase_csv=paths["purchase_csv"])
         failed_codes = _load_failed_codes([paths["fail_bonus_log"]], stage="step4_bonus")
         summary = run_step4_bonus(
             purchase_csv=paths["purchase_csv"],
@@ -953,6 +963,7 @@ def main() -> None:
         print(f"[retry-bonus] failed_codes={len(failed_codes)} summary={summary}")
 
     if args.mode in {"retry-split", "retry-all"}:
+        validate_stage_or_raise("fund_etl_step5_input", purchase_csv=paths["purchase_csv"])
         failed_codes = _load_failed_codes([paths["fail_split_log"]], stage="step5_split")
         summary = run_step5_split(
             purchase_csv=paths["purchase_csv"],
@@ -965,6 +976,7 @@ def main() -> None:
         print(f"[retry-split] failed_codes={len(failed_codes)} summary={summary}")
 
     if args.mode in {"retry-personnel", "retry-all"}:
+        validate_stage_or_raise("fund_etl_step6_input", purchase_csv=paths["purchase_csv"])
         failed_codes = _load_failed_codes([paths["fail_personnel_log"]], stage="step6_personnel")
         summary = run_step6_personnel(
             purchase_csv=paths["purchase_csv"],
@@ -977,6 +989,7 @@ def main() -> None:
         print(f"[retry-personnel] failed_codes={len(failed_codes)} summary={summary}")
 
     if args.mode in {"retry-cum-return", "retry-all"}:
+        validate_stage_or_raise("fund_etl_step7_input", purchase_csv=paths["purchase_csv"])
         failed_codes = _load_failed_codes([paths["fail_cum_return_log"]], stage="step7_cum_return")
         summary = run_step7_cum_return(
             purchase_csv=paths["purchase_csv"],

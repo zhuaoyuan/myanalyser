@@ -409,6 +409,7 @@ else
     --data-version "${DATA_VERSION}" \
     --as-of-date "${AS_OF_DATE}" \
     --stale-max-days "${STALE_MAX_DAYS}" \
+    --resume \
     --apply-ddl \
     --mysql-ddl "${MYSQL_DDL}" \
     --clickhouse-ddl "${CLICKHOUSE_DDL}" \

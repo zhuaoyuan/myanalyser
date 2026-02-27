@@ -18,6 +18,7 @@ import check_trade_day_data_integrity
 import compare_adjusted_nav_and_cum_return
 import fund_etl
 import pipeline_scoreboard
+from pipeline_scoreboard import _build_scoreboard
 
 
 def _test_run_id(tag: str) -> str:
@@ -216,6 +217,61 @@ class CoreCliIntegrationTest(unittest.TestCase):
             )
             pipeline_scoreboard.run_pipeline(args)
             self.assertTrue((out_dir / f"fund_scoreboard_{run_id}.csv").exists())
+
+            # --resume: 验证 checkpoint 存在时跳过计算、产出一致
+            checkpoint_dir = out_dir / ".checkpoint" / run_id
+            self.assertTrue(checkpoint_dir.exists(), "checkpoint dir should exist after first run")
+            scoreboard_csv = out_dir / f"fund_scoreboard_{run_id}.csv"
+            first_content = scoreboard_csv.read_text(encoding="utf-8-sig")
+            args_resume = pipeline_scoreboard.build_parser().parse_args(
+                [
+                    "--purchase-csv",
+                    str(base_dir / "fund_purchase.csv"),
+                    "--overview-csv",
+                    str(base_dir / "fund_overview.csv"),
+                    "--personnel-dir",
+                    str(base_dir / "fund_personnel_by_code"),
+                    "--nav-dir",
+                    str(base_dir / "fund_adjusted_nav_by_code"),
+                    "--output-dir",
+                    str(out_dir),
+                    "--data-version",
+                    run_id,
+                    "--as-of-date",
+                    "2024-02-01",
+                    "--skip-sinks",
+                    "--resume",
+                ]
+            )
+            pipeline_scoreboard.run_pipeline(args_resume)
+            second_content = scoreboard_csv.read_text(encoding="utf-8-sig")
+            self.assertEqual(first_content, second_content, "resume should produce identical output")
+
+    def test_build_scoreboard_exclusion_detail_no_duplicate_primary_key(self) -> None:
+        """多指标为 null 的基金仅产生一条 metric_null 记录，保证主键 (data_version, fund_code, reason_code) 唯一"""
+        import numpy as np
+
+        dim_base = pd.DataFrame(
+            [{"fund_code": "003184", "fund_name": "X"}],
+        )
+        # 构造一只基金有多个 null 指标的 metric_df
+        metric_row = {"fund_code": "003184", "stale_nav_excluded": False}
+        for k in pipeline_scoreboard.METRIC_DIRECTIONS:
+            metric_row[k] = np.nan
+        metric_df = pd.DataFrame([metric_row])
+
+        _, exclusion_detail, _ = _build_scoreboard(
+            dim_base_df=dim_base,
+            metric_df=metric_df,
+            data_version="test_v1",
+            as_of_date=pd.Timestamp("2026-02-26"),
+        )
+        pk_cols = ["data_version", "fund_code", "reason_code"]
+        dup = exclusion_detail.duplicated(subset=pk_cols)
+        self.assertFalse(dup.any(), f"exclusion_detail 存在重复主键: {exclusion_detail[dup]}")
+        metric_null_rows = exclusion_detail[exclusion_detail["reason_code"] == "metric_null"]
+        self.assertEqual(len(metric_null_rows), 1)
+        self.assertIn("annual_return", str(metric_null_rows.iloc[0]["reason_detail"]))
 
     def test_backtest_cli_smoke_with_run_id_layout(self) -> None:
         run_id = _test_run_id("backtest")

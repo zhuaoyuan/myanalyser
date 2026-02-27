@@ -32,7 +32,8 @@ myanalyser/
 - `src/adjusted_nav_tool.py`：复权净值计算
 - `src/compare_adjusted_nav_and_cum_return.py`：复权收益率一致性比对
 - `src/check_trade_day_data_integrity.py`：交易日完整性检查
-- `src/pipeline_scoreboard.py`：评分榜单计算、导出与入库（支持 `--skip-sinks`）
+- `src/pipeline_scoreboard.py`：评分榜单计算、导出与入库（支持 `--formal-only` 正式计算、`--skip-sinks`）
+- `src/scoreboard_metrics.py`：评分榜指标计算共享模块（供 pipeline 与 verify 共用）
 - `src/backtest_portfolio.py`：按规则回测组合
 - `src/verify_scoreboard_recalc.py`：榜单指标独立重算核验（从 fund_etl 中间数据重算并与导出榜单比对）
 
@@ -79,7 +80,7 @@ python src/check_trade_day_data_integrity.py \
 ```
 
 ```bash
-# 6) 榜单计算（仅导出 CSV，不入库）
+# 6) 榜单计算（正式计算模式：仅 Python 计算，不入库，显著提速）
 RUN_ID=20260226_210000_smoke
 python src/pipeline_scoreboard.py \
   --purchase-csv data/versions/${RUN_ID}/fund_etl/fund_purchase.csv \
@@ -89,7 +90,8 @@ python src/pipeline_scoreboard.py \
   --output-dir artifacts/scoreboard_${RUN_ID} \
   --data-version ${RUN_ID} \
   --as-of-date 2026-02-26 \
-  --skip-sinks
+  --formal-only
+# 或使用 --skip-sinks 保留 nav/period 构建但跳过 DB 写入
 ```
 
 ```bash
@@ -154,13 +156,13 @@ RUN_ID=20260226_220000_verify DATA_VERSION=20260226_verify_db bash tools/verify.
 
 ### 2) 正式跑（`tools/run_full_pipeline.sh`）
 
-用于真实生产/正式跑数，重点是“全量数据 + 全链路落库 + 可配置时间窗口”。
+用于真实生产/正式跑数，重点是“全量数据 + 正式计算 + 可配置时间窗口”。
 
 - 不跑单测和 CLI smoke，不做验收抽样（验收跑为 21 只），直接全量 ETL（`fund_etl --mode all`）
 - 包含交易日完整性检查、复权收益率一致性比对、Step 9.5 过滤
-- 评分流程直接消费过滤后的 `fund_purchase_for_step10_filtered.csv`
+- 评分流程使用 `--formal-only`（纯 Python 计算，不写 DB），直接消费过滤后的 `fund_purchase_for_step10_filtered.csv`
 - 支持同 `RUN_ID` 断点续跑：各步骤成功后写 checkpoint，再次运行时优先复用已完成产物
-- 不包含 backtest（回测部分建议独立执行）
+- 不包含 backtest、不包含核验（核验仅在 `verify.sh` 中执行）
 
 ```bash
 cd /Users/zhuaoyuan/cursor-workspace/finance/myanalyser

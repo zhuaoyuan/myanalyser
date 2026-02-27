@@ -247,6 +247,71 @@ class CoreCliIntegrationTest(unittest.TestCase):
             second_content = scoreboard_csv.read_text(encoding="utf-8-sig")
             self.assertEqual(first_content, second_content, "resume should produce identical output")
 
+    def test_pipeline_formal_only_produces_same_metrics_as_full(self) -> None:
+        """formal-only 与 full 模式在相同输入下应产出相同的 scoreboard 指标列。"""
+        run_id = _test_run_id("formal_vs_full")
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            base_dir = root / "data" / "versions" / run_id / "fund_etl"
+            base_dir.mkdir(parents=True, exist_ok=True)
+            (base_dir / "fund_personnel_by_code").mkdir(parents=True, exist_ok=True)
+            (base_dir / "fund_adjusted_nav_by_code").mkdir(parents=True, exist_ok=True)
+            out_formal = root / "artifacts" / f"scoreboard_formal_{run_id}"
+            out_full = root / "artifacts" / f"scoreboard_full_{run_id}"
+
+            # 构造足够多净值点以产生完整指标（约 5 年周频，稳定增长）
+            nav_dates = pd.date_range("2020-01-01", "2024-12-31", freq="W-FRI")
+            growth = 1.0 + 0.15 * (nav_dates - nav_dates.min()).days / (nav_dates.max() - nav_dates.min()).days
+            nav_df = pd.DataFrame({
+                "基金代码": "000001",
+                "净值日期": nav_dates,
+                "单位净值": growth.values,
+                "复权净值": growth.values,
+            })
+            nav_df.to_csv(base_dir / "fund_adjusted_nav_by_code" / "000001.csv", index=False, encoding="utf-8-sig")
+
+            pd.DataFrame([{"基金代码": "000001", "基金简称": "A", "申购状态": "开放申购", "赎回状态": "开放赎回",
+                          "下一开放日": "", "购买起点": 1, "日累计限定金额": 100, "手续费": "1.0%"}]).to_csv(
+                base_dir / "fund_purchase.csv", index=False, encoding="utf-8-sig")
+            pd.DataFrame([{"基金代码": "000001", "基金简称": "A", "基金全称": "A基金", "基金类型": "混合",
+                          "成立日期/规模": "2010-01-01", "资产规模": "10亿元", "管理费率": "1.0%", "托管费率": "0.2%",
+                          "销售服务费率": "0.1%", "最高认购费率": "1.2%"}]).to_csv(
+                base_dir / "fund_overview.csv", index=False, encoding="utf-8-sig")
+            pd.DataFrame([{"基金代码": "000001", "公告日期": "2024-01-01"}]).to_csv(
+                base_dir / "fund_personnel_by_code" / "000001.csv", index=False, encoding="utf-8-sig")
+
+            common = [
+                "--purchase-csv", str(base_dir / "fund_purchase.csv"),
+                "--overview-csv", str(base_dir / "fund_overview.csv"),
+                "--personnel-dir", str(base_dir / "fund_personnel_by_code"),
+                "--nav-dir", str(base_dir / "fund_adjusted_nav_by_code"),
+                "--data-version", run_id, "--as-of-date", "2024-12-31", "--stale-max-days", "3650",
+            ]
+            args_formal = pipeline_scoreboard.build_parser().parse_args(
+                common + ["--output-dir", str(out_formal), "--formal-only"]
+            )
+            args_full = pipeline_scoreboard.build_parser().parse_args(
+                common + ["--output-dir", str(out_full), "--skip-sinks"]
+            )
+            pipeline_scoreboard.run_pipeline(args_formal)
+            pipeline_scoreboard.run_pipeline(args_full)
+
+            formal_csv = out_formal / f"fund_scoreboard_{run_id}.csv"
+            full_csv = out_full / f"fund_scoreboard_{run_id}.csv"
+            self.assertTrue(formal_csv.exists())
+            self.assertTrue(full_csv.exists())
+
+            df_formal = pd.read_csv(formal_csv, dtype=str, encoding="utf-8-sig")
+            df_full = pd.read_csv(full_csv, dtype=str, encoding="utf-8-sig")
+            metric_cols = [c for c in df_formal.columns if c in df_full.columns and c not in ["基金代码", "基金名称"]]
+            for c in metric_cols:
+                if c in df_formal.columns and c in df_full.columns:
+                    self.assertEqual(
+                        df_formal[c].tolist(),
+                        df_full[c].tolist(),
+                        f"column {c} differs: formal={df_formal[c].tolist()}, full={df_full[c].tolist()}",
+                    )
+
     def test_build_scoreboard_exclusion_detail_no_duplicate_primary_key(self) -> None:
         """多指标为 null 的基金仅产生一条 metric_null 记录，保证主键 (data_version, fund_code, reason_code) 唯一"""
         import numpy as np

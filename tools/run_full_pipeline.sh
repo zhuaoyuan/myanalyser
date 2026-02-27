@@ -399,7 +399,7 @@ if has_checkpoint "step7_scoreboard"; then
   echo "[full-run] step 7/7: checkpoint hit, skip pipeline scoreboard -> db"
   assert_csv_has_rows "${SCOREBOARD_CSV}"
 else
-  echo "[full-run] step 7/7: pipeline scoreboard -> db"
+  echo "[full-run] step 7/7: pipeline scoreboard (formal-only, no DB)"
   "${PYTHON_BIN}" src/pipeline_scoreboard.py \
     --purchase-csv "${FILTERED_PURCHASE_CSV}" \
     --overview-csv "${FUND_ETL_DIR}/fund_overview.csv" \
@@ -409,17 +409,7 @@ else
     --data-version "${DATA_VERSION}" \
     --as-of-date "${AS_OF_DATE}" \
     --stale-max-days "${STALE_MAX_DAYS}" \
-    --resume \
-    --apply-ddl \
-    --mysql-ddl "${MYSQL_DDL}" \
-    --clickhouse-ddl "${CLICKHOUSE_DDL}" \
-    --mysql-host 127.0.0.1 \
-    --mysql-port 3306 \
-    --mysql-user root \
-    --mysql-password your_strong_password \
-    --mysql-db fund_analysis \
-    --clickhouse-db fund_analysis \
-    --clickhouse-container fund_clickhouse
+    --formal-only
   assert_csv_has_rows "${SCOREBOARD_CSV}"
   mark_checkpoint "step7_scoreboard"
 fi

@@ -54,8 +54,35 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-WORKSPACE_ROOT="$(cd "${PROJECT_ROOT}/.." && pwd)"
-DB_INFRA_DIR="${WORKSPACE_ROOT}/fund_db_infra"
+
+find_db_infra_dir() {
+  local cursor="$1"
+  while true; do
+    local candidate="${cursor}/fund_db_infra"
+    if [[ -f "${candidate}/docker-compose.yml" ]]; then
+      echo "${candidate}"
+      return 0
+    fi
+    local parent
+    parent="$(cd "${cursor}/.." && pwd)"
+    if [[ "${parent}" == "${cursor}" ]]; then
+      break
+    fi
+    cursor="${parent}"
+  done
+  return 1
+}
+
+if [[ -n "${DB_INFRA_DIR:-}" ]]; then
+  if [[ "${DB_INFRA_DIR}" != /* ]]; then
+    DB_INFRA_DIR="$(cd "${PROJECT_ROOT}" && cd "${DB_INFRA_DIR}" && pwd)"
+  fi
+else
+  DB_INFRA_DIR="$(find_db_infra_dir "${PROJECT_ROOT}")" || {
+    echo "[full-run] cannot locate fund_db_infra from ${PROJECT_ROOT}; set DB_INFRA_DIR explicitly"
+    exit 1
+  }
+fi
 
 cd "${PROJECT_ROOT}"
 
@@ -373,8 +400,8 @@ if [[ -n "${LOCAL_PURCHASE_CSV}" ]]; then
 fi
 
 start_step "step1_start_db"
-assert_file_exists "${WORKSPACE_ROOT}/fund_db_infra/docker-compose.yml"
-docker_compose_cmd -f "${WORKSPACE_ROOT}/fund_db_infra/docker-compose.yml" up -d
+assert_file_exists "${DB_INFRA_DIR}/docker-compose.yml"
+docker_compose_cmd -f "${DB_INFRA_DIR}/docker-compose.yml" up -d
 wait_mysql_ready
 wait_clickhouse_ready
 finish_step "success"

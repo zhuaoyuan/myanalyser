@@ -35,10 +35,10 @@ myanalyser/
 - `src/adjusted_nav_tool.py`：复权净值计算
 - `src/compare_adjusted_nav_and_cum_return.py`：复权收益率一致性比对
 - `src/check_trade_day_data_integrity.py`：交易日完整性检查
-- `src/pipeline_scoreboard.py`：评分榜单计算、导出与入库（支持 `--formal-only`、`--skip-sinks`、`--clickhouse-write-profile`、`--clickhouse-write-scope`）
+- `src/pipeline_scoreboard.py`：评分榜单计算、导出与入库（支持 `--formal-only`、`--skip-sinks`、`--latest-nav-date`、`--clickhouse-write-profile`、`--clickhouse-write-scope`）
 - `src/scoreboard_metrics.py`：评分榜指标计算共享模块（供 pipeline 与 verify 共用）
 - `src/backtest_portfolio.py`：按规则回测组合
-- `src/verify_scoreboard_recalc.py`：榜单指标独立重算核验（从 fund_etl 中间数据重算并与导出榜单比对）
+- `src/verify_scoreboard_recalc.py`：榜单指标独立重算核验（从 fund_etl 中间数据重算并与导出榜单比对，支持 `--latest-nav-date`）
 - `src/contracts/pipeline_contracts.py`：关键中间产物契约（列名/类型/非空/唯一键、目录 CSV 文件数量）
 - `src/validators/validate_pipeline_artifacts.py`：按 stage 执行契约校验（失败返回非 0）
 - `src/transforms/build_filtered_purchase_csv.py`：根据过滤结果生成 `fund_purchase_for_step10_filtered.csv`
@@ -99,6 +99,20 @@ python src/pipeline_scoreboard.py \
   --formal-only
 # 或使用 --skip-sinks 保留 nav/period 构建但跳过 DB 写入
 
+# 历史截断模式（用于更公正的回测）：
+# 仅使用 <= latest-nav-date 的净值与人事数据计算榜单。
+# 设置 --latest-nav-date 时，--resume 会自动禁用，避免复用不匹配 checkpoint。
+python src/pipeline_scoreboard.py \
+  --purchase-csv data/versions/${RUN_ID}/fund_etl/fund_purchase.csv \
+  --overview-csv data/versions/${RUN_ID}/fund_etl/fund_overview.csv \
+  --personnel-dir data/versions/${RUN_ID}/fund_etl/fund_personnel_by_code \
+  --nav-dir data/versions/${RUN_ID}/fund_etl/fund_adjusted_nav_by_code \
+  --output-dir artifacts/scoreboard_${RUN_ID}_hist_20251231 \
+  --data-version ${RUN_ID}_hist_20251231 \
+  --as-of-date 2025-12-31 \
+  --latest-nav-date 2025-12-31 \
+  --formal-only
+
 # 验收/联调场景可控制 ClickHouse 写入策略
 # --clickhouse-write-profile: auto|safe|fast（默认 auto）
 # --clickhouse-write-scope: full|verify_minimal（仅写 nav_daily + scoreboard）
@@ -111,6 +125,8 @@ python src/verify_scoreboard_recalc.py \
   --scoreboard-csv artifacts/scoreboard_${RUN_ID}/scoreboard.csv \
   --fund-etl-dir data/versions/${RUN_ID}/fund_etl \
   --output-dir artifacts/scoreboard_${RUN_ID}/scoreboard_recheck
+# 若 scoreboard 是历史截断口径，需传入相同 latest-nav-date 以保持一致：
+#   --latest-nav-date 2025-12-31
 ```
 
 核验脚本从 `fund_adjusted_nav_by_code` 重算年化收益、夏普比率、最大回撤等指标及排名，与导出榜单逐项比对。产物：`summary.csv`（每只基金是否全部通过）、`details/{基金代码}.csv`（逐项明细）、`metrics_recalc_sample.csv`。默认 `--max-input-rows 200`，超过会报错（重算需全量输入，不支持抽样）。

@@ -109,10 +109,16 @@ def _is_equal(left: int | float | None, right: int | float | None) -> bool:
     return abs(float(left) - float(right)) <= 1e-12
 
 
-def _build_recalc_metrics(scoreboard_df: pd.DataFrame, nav_dir: Path) -> pd.DataFrame:
+def _build_recalc_metrics_with_latest_nav_date(
+    scoreboard_df: pd.DataFrame,
+    nav_dir: Path,
+    latest_nav_date: pd.Timestamp | None = None,
+) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     for code in scoreboard_df["基金代码"].astype(str).map(safe_code).tolist():
         nav_df = load_nav_df(nav_dir / f"{code}.csv")
+        if latest_nav_date is not None:
+            nav_df = nav_df[nav_df["净值日期"] <= latest_nav_date].reset_index(drop=True)
         row: dict[str, object] = {"基金代码": code}
         for k in METRIC_DIRECTIONS:
             row[k] = None
@@ -135,6 +141,7 @@ def run_verification(
     fund_etl_dir: Path,
     output_dir: Path,
     max_input_rows: int = DEFAULT_MAX_INPUT_ROWS,
+    latest_nav_date: pd.Timestamp | None = None,
 ) -> dict[str, Path]:
     validate_stage_or_raise(
         "verify_scoreboard_recalc_input",
@@ -158,7 +165,11 @@ def run_verification(
     scoreboard_df["基金代码"] = scoreboard_df["基金代码"].map(safe_code)
 
     nav_dir = fund_etl_dir / "fund_adjusted_nav_by_code"
-    recalc_df = _build_recalc_metrics(scoreboard_df=scoreboard_df, nav_dir=nav_dir)
+    recalc_df = _build_recalc_metrics_with_latest_nav_date(
+        scoreboard_df=scoreboard_df,
+        nav_dir=nav_dir,
+        latest_nav_date=latest_nav_date,
+    )
     merged = scoreboard_df.merge(recalc_df, on="基金代码", how="left", suffixes=("", "_recalc"))
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -221,16 +232,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fund-etl-dir", type=Path, required=True, help=".../data/versions/{run_id}/fund_etl")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--max-input-rows", type=int, default=DEFAULT_MAX_INPUT_ROWS)
+    parser.add_argument("--latest-nav-date", type=str, default=None, help="可选，按净值日期截断重算，格式 YYYY-MM-DD")
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
+    latest_nav_date = pd.to_datetime(args.latest_nav_date) if args.latest_nav_date else None
     result = run_verification(
         scoreboard_csv=args.scoreboard_csv,
         fund_etl_dir=args.fund_etl_dir,
         output_dir=args.output_dir,
         max_input_rows=args.max_input_rows,
+        latest_nav_date=latest_nav_date,
     )
     print("alignment: window_start=end_date-DateOffset(years=N), freq={week:W-FRI, month:ME, quarter:QE}")
     print("alignment: ranking=sample-scope rank(method=min), metric direction consistent with pipeline_scoreboard.py")

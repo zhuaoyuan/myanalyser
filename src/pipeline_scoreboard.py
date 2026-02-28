@@ -403,7 +403,10 @@ def _parse_date(text: object) -> pd.Timestamp | pd.NaT:
     return pd.to_datetime(s, errors="coerce")
 
 
-def _load_one_personnel(path: Path) -> tuple[str, pd.Timestamp | pd.NaT]:
+def _load_one_personnel(
+    path: Path,
+    latest_allowed_date: pd.Timestamp | None = None,
+) -> tuple[str, pd.Timestamp | pd.NaT]:
     """单文件读取，供并发调用。返回 (code, latest_date)。"""
     code = _safe_code(path.stem)
     if not path.exists():
@@ -415,11 +418,15 @@ def _load_one_personnel(path: Path) -> tuple[str, pd.Timestamp | pd.NaT]:
     if "公告日期" not in df.columns or df.empty:
         return (code, pd.NaT)
     ds = pd.to_datetime(df["公告日期"], errors="coerce").dropna()
+    if latest_allowed_date is not None:
+        ds = ds[ds <= latest_allowed_date]
     return (code, ds.max() if not ds.empty else pd.NaT)
 
 
 def _load_personnel_latest_date(
-    personnel_dir: Path, target_codes: set[str] | None = None
+    personnel_dir: Path,
+    target_codes: set[str] | None = None,
+    latest_allowed_date: pd.Timestamp | None = None,
 ) -> dict[str, pd.Timestamp | pd.NaT]:
     if target_codes is not None:
         paths = [personnel_dir / f"{code}.csv" for code in sorted(target_codes)]
@@ -428,7 +435,10 @@ def _load_personnel_latest_date(
 
     out: dict[str, pd.Timestamp | pd.NaT] = {}
     with ThreadPoolExecutor(max_workers=MAX_CSV_WORKERS) as executor:
-        futures = {executor.submit(_load_one_personnel, p): p for p in paths}
+        futures = {
+            executor.submit(_load_one_personnel, p, latest_allowed_date): p
+            for p in paths
+        }
         for future in as_completed(futures):
             code, val = future.result()
             out[code] = val
@@ -507,13 +517,18 @@ def _build_dim_base(
 
 
 def _process_one_nav_formal(
-    path: Path, as_of_date: pd.Timestamp, stale_max_days: int
+    path: Path,
+    as_of_date: pd.Timestamp,
+    stale_max_days: int,
+    latest_nav_date: pd.Timestamp | None = None,
 ) -> dict[str, object] | None:
     """正式计算模式：仅计算指标，不构建 nav/period 明细。返回 metric_row 或 None。"""
     if not path.exists():
         return None
     code = _safe_code(path.stem)
     df = _metrics_load_nav(path)
+    if latest_nav_date is not None:
+        df = df[df["净值日期"] <= latest_nav_date].reset_index(drop=True)
     if df.empty:
         return None
 
@@ -544,7 +559,10 @@ def _process_one_nav_formal(
 
 
 def _process_one_nav(
-    path: Path, as_of_date: pd.Timestamp, stale_max_days: int
+    path: Path,
+    as_of_date: pd.Timestamp,
+    stale_max_days: int,
+    latest_nav_date: pd.Timestamp | None = None,
 ) -> tuple[dict[str, object] | None, pd.DataFrame | None, list[pd.DataFrame]]:
     """单文件处理，供并发调用。返回 (metric_row, nav_part, period_parts)。"""
     if not path.exists():
@@ -560,6 +578,8 @@ def _process_one_nav(
     df["复权净值"] = pd.to_numeric(df["复权净值"], errors="coerce")
     df["单位净值"] = pd.to_numeric(df.get("单位净值"), errors="coerce")
     df = df.dropna(subset=["净值日期", "复权净值"]).sort_values("净值日期").reset_index(drop=True)
+    if latest_nav_date is not None:
+        df = df[df["净值日期"] <= latest_nav_date].reset_index(drop=True)
     if df.empty:
         return (None, None, [])
 
@@ -626,6 +646,7 @@ def _calc_all_metrics(
     as_of_date: pd.Timestamp,
     stale_max_days: int,
     code_limit: int | None,
+    latest_nav_date: pd.Timestamp | None = None,
     target_codes: set[str] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     if target_codes is not None:
@@ -643,7 +664,7 @@ def _calc_all_metrics(
 
     with ThreadPoolExecutor(max_workers=MAX_CSV_WORKERS) as executor:
         futures = [
-            executor.submit(_process_one_nav, p, as_of_date, stale_max_days) for p in files
+            executor.submit(_process_one_nav, p, as_of_date, stale_max_days, latest_nav_date) for p in files
         ]
         done = 0
         for future in as_completed(futures):
@@ -670,6 +691,7 @@ def _calc_all_metrics_formal(
     as_of_date: pd.Timestamp,
     stale_max_days: int,
     code_limit: int | None,
+    latest_nav_date: pd.Timestamp | None = None,
     target_codes: set[str] | None = None,
 ) -> pd.DataFrame:
     """正式计算模式：仅计算指标，不构建 nav_df/period_df，显著提速。"""
@@ -686,7 +708,7 @@ def _calc_all_metrics_formal(
 
     with ThreadPoolExecutor(max_workers=MAX_CSV_WORKERS) as executor:
         futures = [
-            executor.submit(_process_one_nav_formal, p, as_of_date, stale_max_days) for p in files
+            executor.submit(_process_one_nav_formal, p, as_of_date, stale_max_days, latest_nav_date) for p in files
         ]
         done = 0
         for future in as_completed(futures):
@@ -1021,6 +1043,7 @@ def _load_checkpoint(checkpoint_dir: Path) -> dict[str, pd.DataFrame]:
 def run_pipeline(args: argparse.Namespace) -> None:
     t0 = time.perf_counter()
     as_of = pd.to_datetime(args.as_of_date)
+    latest_nav_date = pd.to_datetime(args.latest_nav_date) if args.latest_nav_date else None
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     validate_stage_or_raise(
@@ -1036,6 +1059,9 @@ def run_pipeline(args: argparse.Namespace) -> None:
     formal_only = getattr(args, "formal_only", False)
     if formal_only:
         args.skip_sinks = True
+    if latest_nav_date is not None and args.resume:
+        print("[scoreboard] --latest-nav-date is set, --resume disabled for this run")
+        args.resume = False
 
     # --resume: 若 checkpoint 完整则加载，跳过 personnel/dim_base/metrics/scoreboard 计算（formal_only 时不使用）
     if not formal_only and args.resume and _checkpoint_complete(checkpoint_dir):
@@ -1062,7 +1088,12 @@ def run_pipeline(args: argparse.Namespace) -> None:
         print(f"[scoreboard] target_fund_count={len(target_codes)}")
 
         t_load = time.perf_counter()
-        personnel_latest = _load_personnel_latest_date(args.personnel_dir, target_codes=target_codes)
+        personnel_cutoff_date = latest_nav_date if latest_nav_date is not None else None
+        personnel_latest = _load_personnel_latest_date(
+            args.personnel_dir,
+            target_codes=target_codes,
+            latest_allowed_date=personnel_cutoff_date,
+        )
         print(f"[scoreboard] personnel_load done: {len(personnel_latest)} codes, elapsed={time.perf_counter() - t_load:.2f}s")
 
         t_dim = time.perf_counter()
@@ -1082,6 +1113,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 as_of_date=as_of,
                 stale_max_days=args.stale_max_days,
                 code_limit=args.code_limit,
+                latest_nav_date=latest_nav_date,
                 target_codes=target_codes,
             )
             nav_cols = ["fund_code", "nav_date", "unit_nav", "adjusted_nav", "daily_return", "latest_nav_date"]
@@ -1098,6 +1130,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 as_of_date=as_of,
                 stale_max_days=args.stale_max_days,
                 code_limit=args.code_limit,
+                latest_nav_date=latest_nav_date,
                 target_codes=target_codes,
             )
             print(
@@ -1388,6 +1421,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--data-version", type=str, required=True)
     parser.add_argument("--as-of-date", type=str, required=True)
+    parser.add_argument(
+        "--latest-nav-date",
+        type=str,
+        default=None,
+        help="可选，按净值日期截断输入数据（仅保留 <= 该日期的净值）后计算指标，格式 YYYY-MM-DD",
+    )
     parser.add_argument("--stale-max-days", type=int, default=2)
     parser.add_argument("--code-limit", type=int, default=None)
     parser.add_argument("--skip-sinks", action="store_true", help="Only generate CSV outputs, skip MySQL/ClickHouse writes")

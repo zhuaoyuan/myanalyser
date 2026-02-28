@@ -213,6 +213,31 @@ source /Users/zhuaoyuan/cursor-workspace/finance/myanalyser/.venv312/bin/activat
 bash tools/run_full_pipeline.sh
 ```
 
+长时任务推荐使用隔离启动脚本（会自动创建 `git worktree`、记录元数据并后台运行）：
+
+```bash
+cd /Users/zhuaoyuan/cursor-workspace/finance
+bash myanalyser/tools/start_isolated_pipeline.sh \
+  --venv /Users/zhuaoyuan/cursor-workspace/finance/myanalyser/.venv312
+```
+
+隔离启动脚本常用参数：
+
+- `--venv /path/to/venv`：为后台进程注入 `VIRTUAL_ENV` 与 `PATH`。
+- `--allow-dirty`：允许当前开发工作区有未提交改动（会记录到 `VERSION_INFO`，但运行代码仍固定在当前 `HEAD`）。
+- `--target-dir /path/to/run_dir`：指定 worktree 运行目录。
+- `@/path/to/fund_purchase.csv`：传入本次运行使用的 purchase 文件。
+
+通过隔离脚本传递 `run_full_pipeline.sh` 环境变量（推荐命令前缀）：
+
+```bash
+ETL_MAX_WORKERS=16 \
+FILTER_START_DATE=2023-01-01 \
+DATA_VERSION=202602_custom \
+bash myanalyser/tools/start_isolated_pipeline.sh \
+  --venv /Users/zhuaoyuan/cursor-workspace/finance/myanalyser/.venv312
+```
+
 常用参数通过环境变量传入：
 
 ```bash
@@ -235,6 +260,12 @@ bash tools/run_full_pipeline.sh
 - `artifacts/full_run_{RUN_ID}/run_report_steps.csv`
 - `artifacts/full_run_{RUN_ID}/run_report_summary.csv`
 - `artifacts/full_run_{RUN_ID}/run_report.md`
+
+隔离启动额外产物（位于隔离目录根，例如 `../finance-runs/run_YYYYMMDD_HHMMSS/`）：
+
+- `VERSION_INFO`：运行时间、commit、branch、运行 PID、venv 等元信息
+- `LAUNCH_INFO`：启动参数记录（如 `PIPELINE_ARG`、`VENV_DIR`）
+- `pipeline.log`：后台运行日志
 
 ## 最小回归基线
 

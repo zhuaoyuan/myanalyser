@@ -1,5 +1,55 @@
 #!/usr/bin/env bash
 
+# ================================
+# run_full_pipeline.sh 使用说明（完整示例）
+# ================================
+# 1) 最小可用（使用默认参数）：
+#    bash myanalyser/tools/run_full_pipeline.sh
+#
+# 2) 指定本地 purchase csv（参数写成 @<path>）：
+#    bash myanalyser/tools/run_full_pipeline.sh @/absolute/or/relative/path/to/fund_purchase.csv
+#
+# 3) 完整参数示例（推荐复制后按需改值）：
+#    RUN_ID=20260228_233000_full_run \
+#    DATA_VERSION=20260228_233000_db \
+#    ETL_MAX_RETRIES=3 \
+#    ETL_RETRY_SLEEP=1.0 \
+#    ETL_MAX_WORKERS=8 \
+#    ETL_PROGRESS_INTERVAL=5.0 \
+#    STALE_MAX_DAYS=2 \
+#    INTEGRITY_START_DATE=2020-01-01 \
+#    INTEGRITY_END_DATE=2026-02-28 \
+#    FILTER_START_DATE=2023-01-01 \
+#    FILTER_MAX_ABS_DEVIATION=0.02 \
+#    bash myanalyser/tools/run_full_pipeline.sh @/absolute/path/to/fund_purchase.csv
+#
+# 4) 后台运行并写日志（长任务常用）：
+#    nohup bash -lc '
+#      export RUN_ID=20260228_233000_full_run
+#      export DATA_VERSION=20260228_233000_db
+#      export ETL_MAX_WORKERS=16
+#      export FILTER_START_DATE=2023-01-01
+#      bash myanalyser/tools/run_full_pipeline.sh @/absolute/path/to/fund_purchase.csv
+#    ' > /tmp/run_full_pipeline.log 2>&1 &
+#
+# 5) 变量含义（本脚本内支持覆盖）：
+#    RUN_ID                 运行批次 ID（默认：当前时间_full_run）
+#    DATA_VERSION           入库/产物版本（默认：${RUN_ID}_db）
+#    ETL_MAX_RETRIES        ETL 重试次数（默认：3）
+#    ETL_RETRY_SLEEP        ETL 重试等待秒数（默认：1.0）
+#    ETL_MAX_WORKERS        ETL 并发数（默认：8）
+#    ETL_PROGRESS_INTERVAL  ETL 进度打印间隔秒（默认：5.0）
+#    STALE_MAX_DAYS         有效性校验允许滞后天数（默认：2）
+#    INTEGRITY_START_DATE   交易日完整性校验开始日（默认：2020-01-01）
+#    INTEGRITY_END_DATE     交易日完整性校验结束日（默认：当天）
+#    FILTER_START_DATE      收益比较过滤起始日（默认：2023-01-01）
+#    FILTER_MAX_ABS_DEVIATION  收益偏差过滤阈值（默认：0.02）
+#
+# 注意：
+# - 仅支持 0 或 1 个位置参数；若传入，必须是 @<csv_path> 格式。
+# - 建议先激活 venv，或确保 python/python3 在 PATH 中可用。
+# - 默认输出目录在 myanalyser/artifacts 和 myanalyser/data/versions 下。
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -53,7 +103,7 @@ ETL_MAX_RETRIES="${ETL_MAX_RETRIES:-3}"
 ETL_RETRY_SLEEP="${ETL_RETRY_SLEEP:-1.0}"
 ETL_MAX_WORKERS="${ETL_MAX_WORKERS:-8}"
 ETL_PROGRESS_INTERVAL="${ETL_PROGRESS_INTERVAL:-5.0}"
-STALE_MAX_DAYS="${STALE_MAX_DAYS:-3650}"
+STALE_MAX_DAYS="${STALE_MAX_DAYS:-2}"
 
 INTEGRITY_START_DATE="${INTEGRITY_START_DATE:-2020-01-01}"
 INTEGRITY_END_DATE="${INTEGRITY_END_DATE:-$(date +%Y-%m-%d)}"

@@ -44,6 +44,8 @@
 #    INTEGRITY_END_DATE     交易日完整性校验结束日（默认：当天）
 #    FILTER_START_DATE      收益比较过滤起始日（默认：2023-01-01）
 #    FILTER_MAX_ABS_DEVIATION  收益偏差过滤阈值（默认：0.02）
+#    DB_INFRA_DIR           fund_db_infra 目录（默认：自动向上查找）
+#    TRADE_DATES_CSV        交易日历 CSV 路径（默认：自动查找）
 #
 # 注意：
 # - 仅支持 0 或 1 个位置参数；若传入，必须是 @<csv_path> 格式。
@@ -73,6 +75,25 @@ find_db_infra_dir() {
   return 1
 }
 
+find_file_upward() {
+  local cursor="$1"
+  local rel_path="$2"
+  while true; do
+    local candidate="${cursor}/${rel_path}"
+    if [[ -f "${candidate}" ]]; then
+      echo "${candidate}"
+      return 0
+    fi
+    local parent
+    parent="$(cd "${cursor}/.." && pwd)"
+    if [[ "${parent}" == "${cursor}" ]]; then
+      break
+    fi
+    cursor="${parent}"
+  done
+  return 1
+}
+
 if [[ -n "${DB_INFRA_DIR:-}" ]]; then
   if [[ "${DB_INFRA_DIR}" != /* ]]; then
     DB_INFRA_DIR="$(cd "${PROJECT_ROOT}" && cd "${DB_INFRA_DIR}" && pwd)"
@@ -82,6 +103,21 @@ else
     echo "[full-run] cannot locate fund_db_infra from ${PROJECT_ROOT}; set DB_INFRA_DIR explicitly"
     exit 1
   }
+fi
+
+if [[ -n "${TRADE_DATES_CSV:-}" ]]; then
+  if [[ "${TRADE_DATES_CSV}" != /* ]]; then
+    TRADE_DATES_CSV="$(cd "${PROJECT_ROOT}" && cd "$(dirname "${TRADE_DATES_CSV}")" && pwd)/$(basename "${TRADE_DATES_CSV}")"
+  fi
+else
+  TRADE_DATES_CSV="${PROJECT_ROOT}/data/common/trade_dates.csv"
+  if [[ ! -f "${TRADE_DATES_CSV}" ]]; then
+    TRADE_DATES_CSV="$(find_file_upward "${PROJECT_ROOT}" "myanalyser/data/common/trade_dates.csv" || true)"
+  fi
+  if [[ -z "${TRADE_DATES_CSV}" ]]; then
+    echo "[full-run] cannot locate trade_dates.csv from ${PROJECT_ROOT}; set TRADE_DATES_CSV explicitly"
+    exit 1
+  fi
 fi
 
 cd "${PROJECT_ROOT}"
@@ -383,6 +419,8 @@ trap on_error ERR
 echo "[full-run] project_root=${PROJECT_ROOT}"
 echo "[full-run] run_id=${RUN_ID}"
 echo "[full-run] data_version=${DATA_VERSION}"
+echo "[full-run] db_infra_dir=${DB_INFRA_DIR}"
+echo "[full-run] trade_dates_csv=${TRADE_DATES_CSV}"
 
 mkdir -p "${FUND_ETL_DIR}" "${LOGS_DIR}" "${ARTIFACTS_DIR}" "${SCOREBOARD_DIR}" "${CHECKPOINT_DIR}"
 printf 'step,status,duration_seconds\n' >"${RUN_REPORT_STEPS_CSV}"
@@ -486,11 +524,12 @@ if has_checkpoint "step4_integrity"; then
   assert_dir_exists "${INTEGRITY_DETAILS_DIR}"
 else
   echo "[full-run] step 4/7: trade-day integrity check"
+  assert_file_exists "${TRADE_DATES_CSV}"
   "${PYTHON_BIN}" src/check_trade_day_data_integrity.py \
     --base-dir "${FUND_ETL_DIR}" \
     --start-date "${INTEGRITY_START_DATE}" \
     --end-date "${INTEGRITY_END_DATE}" \
-    --trade-dates-csv "${PROJECT_ROOT}/data/common/trade_dates.csv" \
+    --trade-dates-csv "${TRADE_DATES_CSV}" \
     --output-dir "${ARTIFACTS_DIR}/trade_day_integrity_reports"
   assert_csv_has_rows "${INTEGRITY_SUMMARY_CSV}"
   assert_dir_exists "${INTEGRITY_DETAILS_DIR}"

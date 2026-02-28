@@ -56,6 +56,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+SCRIPT_PATH="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
 
 find_db_infra_dir() {
   local cursor="$1"
@@ -152,6 +153,33 @@ else
 fi
 
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)_full_run}"
+RUN_ENV_FILE="${PROJECT_ROOT}/data/versions/${RUN_ID}/run_env_snapshot.json"
+if [[ -f "${RUN_ENV_FILE}" && "${FULL_RUN_ENV_REPLAYED:-0}" != "1" ]]; then
+  echo "[full-run] replay env from snapshot: ${RUN_ENV_FILE}"
+  exec "${PYTHON_BIN}" - "${RUN_ENV_FILE}" "${SCRIPT_PATH}" "$@" <<'PY'
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+
+env_file = Path(sys.argv[1])
+script_path = sys.argv[2]
+script_args = sys.argv[3:]
+
+raw = json.loads(env_file.read_text(encoding="utf-8"))
+if not isinstance(raw, dict):
+    raise SystemExit(f"invalid env snapshot (expect object): {env_file}")
+
+env: dict[str, str] = {}
+for k, v in raw.items():
+    env[str(k)] = "" if v is None else str(v)
+env["FULL_RUN_ENV_REPLAYED"] = "1"
+os.execvpe("bash", ["bash", script_path, *script_args], env)
+PY
+fi
+
 DATA_VERSION="${DATA_VERSION:-${RUN_ID}_db}"
 VERIFY_ROOT="${PROJECT_ROOT}/data/versions/${RUN_ID}"
 FUND_ETL_DIR="${VERIFY_ROOT}/fund_etl"
@@ -184,6 +212,33 @@ RUN_REPORT_SUMMARY_CSV="${ARTIFACTS_DIR}/run_report_summary.csv"
 RUN_REPORT_MD="${ARTIFACTS_DIR}/run_report.md"
 CURRENT_STEP=""
 STEP_START_TS=0
+
+export RUN_ID DATA_VERSION
+export DB_INFRA_DIR TRADE_DATES_CSV
+export ETL_MAX_RETRIES ETL_RETRY_SLEEP ETL_MAX_WORKERS ETL_PROGRESS_INTERVAL
+export STALE_MAX_DAYS INTEGRITY_START_DATE INTEGRITY_END_DATE FILTER_START_DATE FILTER_MAX_ABS_DEVIATION
+
+if [[ ! -f "${RUN_ENV_FILE}" ]]; then
+  mkdir -p "${VERIFY_ROOT}"
+  "${PYTHON_BIN}" - <<'PY' "${RUN_ENV_FILE}"
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+
+run_env_file = Path(sys.argv[1])
+run_env_file.parent.mkdir(parents=True, exist_ok=True)
+run_env_file.write_text(
+    json.dumps(dict(os.environ), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
+  echo "[full-run] env snapshot saved: ${RUN_ENV_FILE}"
+else
+  echo "[full-run] env snapshot exists, keep original: ${RUN_ENV_FILE}"
+fi
 
 assert_file_exists() {
   local path="$1"

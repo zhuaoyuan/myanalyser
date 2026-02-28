@@ -123,6 +123,7 @@ fi
 
 cd "${PROJECT_ROOT}"
 
+ORIGINAL_ARGS=("$@")
 LOCAL_PURCHASE_CSV=""
 if [[ $# -gt 0 ]]; then
   case "$1" in
@@ -156,7 +157,7 @@ RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)_full_run}"
 RUN_ENV_FILE="${PROJECT_ROOT}/data/versions/${RUN_ID}/run_env_snapshot.json"
 if [[ -f "${RUN_ENV_FILE}" && "${FULL_RUN_ENV_REPLAYED:-0}" != "1" ]]; then
   echo "[full-run] replay env from snapshot: ${RUN_ENV_FILE}"
-  exec "${PYTHON_BIN}" - "${RUN_ENV_FILE}" "${SCRIPT_PATH}" "$@" <<'PY'
+  exec "${PYTHON_BIN}" - "${RUN_ENV_FILE}" "${SCRIPT_PATH}" "${ORIGINAL_ARGS[@]}" <<'PY'
 from __future__ import annotations
 
 import json

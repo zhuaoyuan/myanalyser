@@ -24,7 +24,7 @@ Usage:
 Behavior:
   1) Create a detached git worktree from current HEAD (or reuse existing target when --run-id is provided)
   2) Record run metadata under the target worktree
-  3) Start tools/run_full_pipeline.sh with nohup in background and pass RUN_ID
+  3) Run tools/run_full_pipeline.sh in foreground and pass RUN_ID
 
 Examples:
   bash myanalyser/tools/start_isolated_pipeline.sh
@@ -190,15 +190,8 @@ if [[ -n "${PIPELINE_ARG}" ]]; then
   CMD+=("${PIPELINE_ARG}")
 fi
 
-if [[ -n "${VENV_DIR}" ]]; then
-  nohup env "RUN_ID=${RUN_ID}" "VIRTUAL_ENV=${VENV_DIR}" "PATH=${VENV_DIR}/bin:${PATH}" "${CMD[@]}" > "${LOG_FILE}" 2>&1 &
-else
-  nohup env "RUN_ID=${RUN_ID}" "${CMD[@]}" > "${LOG_FILE}" 2>&1 &
-fi
-PIPELINE_PID=$!
-
 {
-  echo "Pipeline PID: ${PIPELINE_PID}"
+  echo "Pipeline PID: (foreground)"
   echo "Log File: ${LOG_FILE}"
   echo "Start Date: $(date '+%Y-%m-%d %H:%M:%S %z')"
   if [[ -n "${VENV_DIR}" ]]; then
@@ -208,9 +201,35 @@ PIPELINE_PID=$!
   fi
 } >> "${TARGET_DIR}/VERSION_INFO"
 
-echo "[isolated-run] pipeline started"
+{
+  echo "----"
+  echo "[$(date '+%Y-%m-%d %H:%M:%S %z')] run_id=${RUN_ID}"
+  echo "[$(date '+%Y-%m-%d %H:%M:%S %z')] cmd=${CMD[*]}"
+} >> "${LOG_FILE}"
+
+echo "[isolated-run] pipeline start (foreground)"
 echo "[isolated-run] target dir: ${TARGET_DIR}"
 echo "[isolated-run] run_id: ${RUN_ID}"
-echo "[isolated-run] pid: ${PIPELINE_PID}"
 echo "[isolated-run] log: ${LOG_FILE}"
-echo "[isolated-run] follow log: tail -f '${LOG_FILE}'"
+
+set +e
+if [[ -n "${VENV_DIR}" ]]; then
+  env "RUN_ID=${RUN_ID}" "VIRTUAL_ENV=${VENV_DIR}" "PATH=${VENV_DIR}/bin:${PATH}" "${CMD[@]}" 2>&1 | tee -a "${LOG_FILE}"
+  PIPELINE_EXIT=${PIPESTATUS[0]}
+else
+  env "RUN_ID=${RUN_ID}" "${CMD[@]}" 2>&1 | tee -a "${LOG_FILE}"
+  PIPELINE_EXIT=${PIPESTATUS[0]}
+fi
+set -e
+
+{
+  echo "End Date: $(date '+%Y-%m-%d %H:%M:%S %z')"
+  echo "Exit Code: ${PIPELINE_EXIT}"
+} >> "${TARGET_DIR}/VERSION_INFO"
+
+if [[ "${PIPELINE_EXIT}" -ne 0 ]]; then
+  echo "[isolated-run] pipeline failed, exit_code=${PIPELINE_EXIT}"
+  exit "${PIPELINE_EXIT}"
+fi
+
+echo "[isolated-run] pipeline finished successfully"

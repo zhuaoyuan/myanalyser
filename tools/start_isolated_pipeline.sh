@@ -185,6 +185,7 @@ fi
 
 cd "${TARGET_DIR}"
 LOG_FILE="${TARGET_DIR}/pipeline.log"
+
 CMD=(bash tools/run_full_pipeline.sh)
 if [[ -n "${PIPELINE_ARG}" ]]; then
   CMD+=("${PIPELINE_ARG}")

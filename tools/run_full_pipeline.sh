@@ -158,7 +158,7 @@ RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)_full_run}"
 RUN_ENV_FILE="${PROJECT_ROOT}/data/versions/${RUN_ID}/run_env_snapshot.json"
 if [[ -f "${RUN_ENV_FILE}" && "${FULL_RUN_ENV_REPLAYED:-0}" != "1" ]]; then
   echo "[full-run] replay env from snapshot: ${RUN_ENV_FILE}"
-  exec "${PYTHON_BIN}" - "${RUN_ENV_FILE}" "${SCRIPT_PATH}" "${ORIGINAL_ARGS[@]}" <<'PY'
+  exec "${PYTHON_BIN}" - "${RUN_ENV_FILE}" "${SCRIPT_PATH}" ${ORIGINAL_ARGS[@]+"${ORIGINAL_ARGS[@]}"} <<'PY'
 from __future__ import annotations
 
 import json
@@ -212,6 +212,13 @@ if [[ -n "${FUND_BLACKLIST_PATH:-}" ]]; then
   fi
 else
   FUND_BLACKLIST_PATH="${PROJECT_ROOT}/data/common/fund_blacklist.csv"
+  if [[ ! -f "${FUND_BLACKLIST_PATH}" ]]; then
+    FUND_BLACKLIST_PATH="$(find_file_upward "${PROJECT_ROOT}" "myanalyser/data/common/fund_blacklist.csv" || true)"
+  fi
+  if [[ -z "${FUND_BLACKLIST_PATH}" ]]; then
+    echo "[full-run] cannot locate fund_blacklist.csv from ${PROJECT_ROOT}; set FUND_BLACKLIST_PATH explicitly"
+    exit 1
+  fi
 fi
 INTEGRITY_DETAILS_DIR="${ARTIFACTS_DIR}/trade_day_integrity_reports/details_${INTEGRITY_START_DATE}_${INTEGRITY_END_DATE}"
 INTEGRITY_SUMMARY_CSV="${ARTIFACTS_DIR}/trade_day_integrity_reports/trade_day_integrity_summary_${INTEGRITY_START_DATE}_${INTEGRITY_END_DATE}.csv"
@@ -314,6 +321,8 @@ if df.empty:
     raise SystemExit(3)
 PY
 }
+
+assert_file_exists "${FUND_BLACKLIST_PATH}"
 
 checkpoint_path() {
   local step="$1"

@@ -44,6 +44,7 @@ myanalyser/
 - `src/validators/validate_pipeline_artifacts.py`：按 stage 执行契约校验（失败返回非 0）
 - `src/transforms/build_effective_purchase_csv.py`：从 `fund_purchase` 剔除黑名单生成 `fund_purchase_effective.csv`（不修改原始 purchase）
 - `src/transforms/build_filtered_purchase_csv.py`：根据过滤结果生成 `fund_purchase_for_step10_filtered.csv`
+- `src/compute_fund_composite_score.py`：基金综合得分计算（对 filtered/scoreboard CSV 做归一化+分组加权，输出带得分的 CSV）
 
 ## 常用命令
 
@@ -149,6 +150,13 @@ python src/transforms/build_filtered_purchase_csv.py \
   --purchase-csv data/versions/${RUN_ID}/fund_etl/fund_purchase.csv \
   --filter-csv artifacts/verify_${RUN_ID}/filtered_fund_candidates.csv \
   --output-csv data/versions/${RUN_ID}/fund_etl/fund_purchase_for_step10_filtered.csv
+```
+
+```bash
+# 10) 基金综合得分计算（对 filtered/scoreboard CSV 做归一化+分组加权）
+python src/compute_fund_composite_score.py \
+  -i result_example/0301_manual_filtered.csv \
+  -o artifacts/composite_score_output.csv
 ```
 
 ## 依赖

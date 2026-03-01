@@ -612,7 +612,7 @@ STEP10_BACKTEST_START_TS="$(date +%s)"
   --selection-rule-id "verify_e2e_top5" \
   --selection-data-version "${DATA_VERSION}" \
   --selection-where "1" \
-  --selection-order-by "annual_return_rank ASC, fund_code ASC" \
+  --selection-order-by "annual_return DESC, fund_code ASC" \
   --selection-limit 5 \
   --nav-data-version "${DATA_VERSION}" \
   --clickhouse-db fund_analysis \

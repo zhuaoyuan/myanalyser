@@ -56,6 +56,21 @@ class ScoreboardMetricsTest(unittest.TestCase):
         out = compute_metrics(df, pd.Timestamp("2024-12-31"))
         self.assertIsNotNone(out["annual_return"])
         self.assertIsNotNone(out["max_drawdown"])
+        self.assertIn("max_drawdown_recovery_days", out)
+        self.assertIn("max_single_day_drop", out)
+
+    def test_compute_metrics_max_single_day_drop(self) -> None:
+        """最大单日跌幅为日收益率最小值（最负值）。"""
+        df = pd.DataFrame([
+            {"净值日期": pd.Timestamp("2024-01-01"), "复权净值": 1.0},
+            {"净值日期": pd.Timestamp("2024-01-02"), "复权净值": 0.95},
+            {"净值日期": pd.Timestamp("2024-01-03"), "复权净值": 0.98},
+        ])
+        out = compute_metrics(df, pd.Timestamp("2024-01-03"))
+        self.assertIsNotNone(out["max_single_day_drop"])
+        self.assertLess(out["max_single_day_drop"], 0)
+        # 1->0.95: -5%, 0.95->0.98: +3.16%
+        self.assertAlmostEqual(out["max_single_day_drop"], -0.05, places=4)
 
     def test_window_metrics_empty(self) -> None:
         df = pd.DataFrame(columns=["净值日期", "复权净值"])
@@ -64,6 +79,6 @@ class ScoreboardMetricsTest(unittest.TestCase):
 
     def test_metric_directions_keys(self) -> None:
         self.assertIn("annual_return", METRIC_DIRECTIONS)
-        self.assertIn("sharpe_ratio", METRIC_DIRECTIONS)
+        self.assertIn("sharpe_ratio_1y", METRIC_DIRECTIONS)
         self.assertEqual(METRIC_DIRECTIONS["max_drawdown"], "asc")
         self.assertEqual(METRIC_DIRECTIONS["annual_return"], "desc")

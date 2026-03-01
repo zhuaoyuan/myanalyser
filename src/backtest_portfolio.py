@@ -582,7 +582,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--selection-where", default="1", help="选基 WHERE 条件（作用于 scoreboard 快照）")
     parser.add_argument(
         "--selection-order-by",
-        default="annual_return_rank ASC, fund_code ASC",
+        default="annual_return DESC, fund_code ASC",
         help="选基 ORDER BY 表达式",
     )
     parser.add_argument("--selection-limit", type=int, default=10, help="选基金数量上限")

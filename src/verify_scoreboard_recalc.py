@@ -17,60 +17,41 @@ from validators.validate_pipeline_artifacts import validate_stage_or_raise
 DEFAULT_MAX_INPUT_ROWS = 200
 DETAIL_COLUMNS = ["核验数据项名称", "原结果", "新结果", "核验是否通过"]
 
-# (中文字段名, 内部字段名, 展示格式)
+# (中文字段名, 内部字段名, 展示格式)，与 pipeline_scoreboard.EXPORT_COLUMN_SPECS 中导出的列名对齐
 VERIFY_FIELDS: list[tuple[str, str, str]] = [
     ("年化收益率", "annual_return", "percent2"),
-    ("年化收益率排名", "annual_return_rank", "int"),
     ("上涨季度比例", "up_quarter_ratio", "percent0"),
-    ("上涨季度比例排名", "up_quarter_ratio_rank", "int"),
     ("上涨月份比例", "up_month_ratio", "percent0"),
-    ("上涨月份比例排名", "up_month_ratio_rank", "int"),
     ("上涨星期比例", "up_week_ratio", "percent0"),
-    ("上涨星期比例排名", "up_week_ratio_rank", "int"),
     ("季涨跌幅标准差", "quarter_return_std", "percent2"),
-    ("季涨跌幅标准差排名", "quarter_return_std_rank", "int"),
     ("月涨跌幅标准差", "month_return_std", "percent2"),
-    ("月涨跌幅标准差排名", "month_return_std_rank", "int"),
     ("周涨跌幅标准差", "week_return_std", "percent2"),
-    ("周涨跌幅标准差排名", "week_return_std_rank", "int"),
     ("最大回撤率", "max_drawdown", "percent2"),
-    ("最大回撤率排名", "max_drawdown_rank", "int"),
     ("近3年年化收益率", "annual_return_3y", "percent2"),
-    ("近3年年化收益率排名", "annual_return_3y_rank", "int"),
     ("近3年上涨季度比例", "up_quarter_ratio_3y", "percent0"),
-    ("近3年上涨季度比例排名", "up_quarter_ratio_3y_rank", "int"),
     ("近3年上涨月份比例", "up_month_ratio_3y", "percent0"),
-    ("近3年上涨月份比例排名", "up_month_ratio_3y_rank", "int"),
     ("近3年上涨星期比例", "up_week_ratio_3y", "percent0"),
-    ("近3年上涨星期比例排名", "up_week_ratio_3y_rank", "int"),
     ("近3年季涨跌幅标准差", "quarter_return_std_3y", "percent2"),
-    ("近3年季涨跌幅标准差排名", "quarter_return_std_3y_rank", "int"),
     ("近3年月涨跌幅标准差", "month_return_std_3y", "percent2"),
-    ("近3年月涨跌幅标准差排名", "month_return_std_3y_rank", "int"),
     ("近3年周涨跌幅标准差", "week_return_std_3y", "percent2"),
-    ("近3年周涨跌幅标准差排名", "week_return_std_3y_rank", "int"),
     ("近3年最大回撤率", "max_drawdown_3y", "percent2"),
-    ("近3年最大回撤率排名", "max_drawdown_3y_rank", "int"),
     ("近1年年化收益率", "annual_return_1y", "percent2"),
-    ("近1年年化收益率排名", "annual_return_1y_rank", "int"),
     ("近1年上涨月份比例", "up_month_ratio_1y", "percent0"),
-    ("近1年上涨月份比例排名", "up_month_ratio_1y_rank", "int"),
     ("近1年上涨星期比例", "up_week_ratio_1y", "percent0"),
-    ("近1年上涨星期比例排名", "up_week_ratio_1y_rank", "int"),
     ("近1年月涨跌幅标准差", "month_return_std_1y", "percent2"),
-    ("近1年月涨跌幅标准差排名", "month_return_std_1y_rank", "int"),
     ("近1年周涨跌幅标准差", "week_return_std_1y", "percent2"),
-    ("近1年周涨跌幅标准差排名", "week_return_std_1y_rank", "int"),
     ("近1年最大回撤率", "max_drawdown_1y", "percent2"),
-    ("近1年最大回撤率排名", "max_drawdown_1y_rank", "int"),
-    ("前1月涨跌幅", "prev_month_return", "percent2"),
-    ("前1月涨跌幅排名", "prev_month_return_rank", "int"),
-    ("月涨跌幅", "curr_month_return", "percent2"),
-    ("月涨跌幅排名", "curr_month_return_rank", "int"),
-    ("夏普比率", "sharpe_ratio", "round2"),
-    ("夏普比率排名", "sharpe_ratio_rank", "int"),
-    ("卡玛比率", "calmar_ratio", "round2"),
-    ("卡玛比率排名", "calmar_ratio_rank", "int"),
+    ("最近一个月涨跌幅", "recent_month_return", "percent2"),
+    ("近1年夏普比率", "sharpe_ratio_1y", "round2"),
+    ("近3年夏普比率", "sharpe_ratio_3y", "round2"),
+    ("近1年卡玛比率", "calmar_ratio_1y", "round2"),
+    ("近3年卡玛比率", "calmar_ratio_3y", "round2"),
+    ("全期最长回撤修复天数", "max_drawdown_recovery_days", "int"),
+    ("近1年最长回撤修复天数", "max_drawdown_recovery_days_1y", "int"),
+    ("近3年最长回撤修复天数", "max_drawdown_recovery_days_3y", "int"),
+    ("全期最大单日跌幅", "max_single_day_drop", "percent2"),
+    ("近1年最大单日跌幅", "max_single_day_drop_1y", "percent2"),
+    ("近3年最大单日跌幅", "max_single_day_drop_3y", "percent2"),
 ]
 
 
@@ -129,11 +110,7 @@ def _build_recalc_metrics_with_latest_nav_date(
             row.update(window_metrics(nav_df=nav_df, end_date=end_date, years=1))
         rows.append(row)
 
-    recalc_df = pd.DataFrame(rows)
-    for metric, direction in METRIC_DIRECTIONS.items():
-        asc = direction == "asc"
-        recalc_df[f"{metric}_rank"] = recalc_df[metric].rank(method="min", ascending=asc).astype("Int64")
-    return recalc_df
+    return pd.DataFrame(rows)
 
 
 def run_verification(
@@ -213,7 +190,7 @@ def run_verification(
     summary_csv = output_dir / "summary.csv"
     summary_df.to_csv(summary_csv, index=False, encoding="utf-8-sig")
 
-    metrics_cols = ["基金代码"] + list(METRIC_DIRECTIONS.keys()) + [f"{k}_rank" for k in METRIC_DIRECTIONS]
+    metrics_cols = ["基金代码"] + list(METRIC_DIRECTIONS.keys())
     metrics_csv = output_dir / "metrics_recalc_sample.csv"
     recalc_df[metrics_cols].to_csv(metrics_csv, index=False, encoding="utf-8-sig")
 
@@ -247,7 +224,7 @@ def main() -> None:
         latest_nav_date=latest_nav_date,
     )
     print("alignment: window_start=end_date-DateOffset(years=N), freq={week:W-FRI, month:ME, quarter:QE}")
-    print("alignment: ranking=sample-scope rank(method=min), metric direction consistent with pipeline_scoreboard.py")
+    print("alignment: metric computation consistent with pipeline_scoreboard.py")
     print(f"summary_csv={result['summary_csv']}")
     print(f"details_dir={result['details_dir']}")
     print(f"metrics_recalc_sample_csv={result['metrics_recalc_sample_csv']}")

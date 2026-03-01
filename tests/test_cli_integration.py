@@ -379,7 +379,7 @@ class CoreCliIntegrationTest(unittest.TestCase):
                 selection_rule_id=f"test_rule_{run_id}",
                 selection_data_version=None,
                 selection_where="1",
-                selection_order_by="annual_return_rank ASC, fund_code ASC",
+                selection_order_by="annual_return DESC, fund_code ASC",
                 selection_limit=2,
                 exclude_subscribe_status="暂停申购,封闭期",
                 exclude_redeem_status="暂停赎回,封闭期",

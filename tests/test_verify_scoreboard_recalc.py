@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from verify_scoreboard_recalc import (
     VERIFY_FIELDS,
-    _build_recalc_metrics,
+    _build_recalc_metrics_with_latest_nav_date,
     _to_display_value,
     run_verification,
 )
@@ -39,7 +39,7 @@ class VerifyScoreboardRecalcTest(unittest.TestCase):
             ).to_csv(nav_dir / "000002.csv", index=False, encoding="utf-8-sig")
 
             base_df = pd.DataFrame([{"基金代码": "000001"}, {"基金代码": "000002"}], dtype=str)
-            recalc_df = _build_recalc_metrics(base_df, nav_dir)
+            recalc_df = _build_recalc_metrics_with_latest_nav_date(base_df, nav_dir, latest_nav_date=None)
             merged = base_df.merge(recalc_df, on="基金代码", how="left")
 
             rows: list[dict[str, object]] = []

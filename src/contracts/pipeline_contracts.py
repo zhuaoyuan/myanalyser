@@ -26,6 +26,18 @@ CONTRACTS: dict[str, CsvContract | DirContract] = {
         unique_key_columns=("基金代码",),
         numeric_columns=("购买起点", "日累计限定金额", "手续费"),
     ),
+    "fund_purchase_effective_csv": CsvContract(
+        required_columns=("基金代码", "基金简称", "申购状态", "赎回状态", "购买起点", "日累计限定金额", "手续费"),
+        non_null_columns=("基金代码",),
+        unique_key_columns=("基金代码",),
+        numeric_columns=("购买起点", "日累计限定金额", "手续费"),
+    ),
+    "fund_blacklist_csv": CsvContract(
+        required_columns=("基金代码",),
+        non_null_columns=(),
+        unique_key_columns=(),
+        min_rows=0,
+    ),
     "fund_overview_csv": CsvContract(
         required_columns=("基金代码", "成立日期/规模"),
         non_null_columns=("基金代码",),
@@ -143,6 +155,16 @@ STAGE_REQUIREMENTS: dict[str, list[tuple[str, str]]] = {
     "fund_etl_step5_input": [("fund_purchase_csv", "purchase_csv")],
     "fund_etl_step6_input": [("fund_purchase_csv", "purchase_csv")],
     "fund_etl_step7_input": [("fund_purchase_csv", "purchase_csv")],
+    "fund_etl_step2_input_effective": [("fund_purchase_effective_csv", "purchase_csv")],
+    "fund_etl_step3_input_effective": [("fund_purchase_effective_csv", "purchase_csv")],
+    "fund_etl_step4_input_effective": [("fund_purchase_effective_csv", "purchase_csv")],
+    "fund_etl_step5_input_effective": [("fund_purchase_effective_csv", "purchase_csv")],
+    "fund_etl_step6_input_effective": [("fund_purchase_effective_csv", "purchase_csv")],
+    "fund_etl_step7_input_effective": [("fund_purchase_effective_csv", "purchase_csv")],
+    "build_effective_purchase_input": [
+        ("fund_purchase_csv", "purchase_csv"),
+    ],
+    "build_effective_purchase_output": [("fund_purchase_effective_csv", "output_csv")],
     "adjusted_nav_input": [
         ("fund_nav_dir", "nav_dir"),
         ("fund_bonus_dir", "bonus_dir"),

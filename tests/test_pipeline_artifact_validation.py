@@ -19,6 +19,13 @@ class PipelineArtifactValidationTest(unittest.TestCase):
         errors = validate_stage("fund_etl_step2_input", {"purchase_csv": purchase_csv})
         self.assertEqual(errors, [])
 
+    def test_stage_validation_ok_on_baseline_effective_purchase(self) -> None:
+        effective_csv = Path(__file__).resolve().parent / "baseline" / "mini_case" / "input" / "fund_etl" / "fund_purchase_effective.csv"
+        if not effective_csv.exists():
+            effective_csv = Path(__file__).resolve().parent / "baseline" / "mini_case" / "input" / "fund_etl" / "fund_purchase.csv"
+        errors = validate_stage("fund_etl_step2_input_effective", {"purchase_csv": effective_csv})
+        self.assertEqual(errors, [])
+
     def test_stage_validation_fails_on_missing_required_column(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "fund_purchase.csv"

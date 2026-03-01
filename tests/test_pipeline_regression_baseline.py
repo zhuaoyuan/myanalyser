@@ -47,8 +47,11 @@ class PipelineRegressionBaselineTest(unittest.TestCase):
             output_root.mkdir(parents=True, exist_ok=True)
 
             fund_etl_dir = input_root / "fund_etl"
+            purchase_csv = fund_etl_dir / "fund_purchase_effective.csv"
+            if not purchase_csv.exists():
+                purchase_csv = fund_etl_dir / "fund_purchase.csv"
             filter_df = filter_funds_for_next_step(
-                purchase_csv=fund_etl_dir / "fund_purchase.csv",
+                purchase_csv=purchase_csv,
                 overview_csv=fund_etl_dir / "fund_overview.csv",
                 nav_dir=fund_etl_dir / "fund_nav_by_code",
                 adjusted_nav_dir=fund_etl_dir / "fund_adjusted_nav_by_code",
@@ -69,7 +72,7 @@ class PipelineRegressionBaselineTest(unittest.TestCase):
 
             filtered_purchase_csv = output_root / "fund_purchase_for_step10_filtered.csv"
             build_filtered_purchase_csv(
-                purchase_csv=fund_etl_dir / "fund_purchase.csv",
+                purchase_csv=purchase_csv,
                 filter_csv=filter_csv,
                 output_csv=filtered_purchase_csv,
             )

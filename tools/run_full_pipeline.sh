@@ -46,6 +46,7 @@
 #    FILTER_MAX_ABS_DEVIATION  收益偏差过滤阈值（默认：0.02）
 #    DB_INFRA_DIR           fund_db_infra 目录（默认：自动向上查找）
 #    TRADE_DATES_CSV        交易日历 CSV 路径（默认：自动查找）
+#    FUND_BLACKLIST_PATH    基金黑名单 CSV（默认：myanalyser/data/common/fund_blacklist.csv）
 #
 # 注意：
 # - 仅支持 0 或 1 个位置参数；若传入，必须是 @<csv_path> 格式。
@@ -204,6 +205,14 @@ FILTER_START_DATE="${FILTER_START_DATE:-2023-01-01}"
 FILTER_MAX_ABS_DEVIATION="${FILTER_MAX_ABS_DEVIATION:-0.02}"
 FILTER_RESULT_CSV="${ARTIFACTS_DIR}/filtered_fund_candidates.csv"
 FILTERED_PURCHASE_CSV="${FUND_ETL_DIR}/fund_purchase_for_step10_filtered.csv"
+FUND_PURCHASE_EFFECTIVE_CSV="${FUND_ETL_DIR}/fund_purchase_effective.csv"
+if [[ -n "${FUND_BLACKLIST_PATH:-}" ]]; then
+  if [[ "${FUND_BLACKLIST_PATH}" != /* ]]; then
+    FUND_BLACKLIST_PATH="$(cd "${PROJECT_ROOT}" && cd "$(dirname "${FUND_BLACKLIST_PATH}")" && pwd)/$(basename "${FUND_BLACKLIST_PATH}")"
+  fi
+else
+  FUND_BLACKLIST_PATH="${PROJECT_ROOT}/data/common/fund_blacklist.csv"
+fi
 INTEGRITY_DETAILS_DIR="${ARTIFACTS_DIR}/trade_day_integrity_reports/details_${INTEGRITY_START_DATE}_${INTEGRITY_END_DATE}"
 INTEGRITY_SUMMARY_CSV="${ARTIFACTS_DIR}/trade_day_integrity_reports/trade_day_integrity_summary_${INTEGRITY_START_DATE}_${INTEGRITY_END_DATE}.csv"
 COMPARE_SUMMARY_CSV="${ARTIFACTS_DIR}/fund_return_compare/summary.csv"
@@ -418,11 +427,18 @@ if logs_dir.exists():
                 stage = str(rec.get("stage", "unknown")).strip() or "unknown"
                 error_stage_count[stage] = error_stage_count.get(stage, 0) + 1
 
-purchase_before = None
+purchase_original = None
+blacklist_removed = None
+purchase_effective = None
 purchase_after = None
 filtered_yes = None
 if (fund_etl_dir / "fund_purchase.csv").exists():
-    purchase_before = len(pd.read_csv(fund_etl_dir / "fund_purchase.csv", dtype=str, encoding="utf-8-sig"))
+    purchase_original = len(pd.read_csv(fund_etl_dir / "fund_purchase.csv", dtype=str, encoding="utf-8-sig"))
+effective_path = fund_etl_dir / "fund_purchase_effective.csv"
+if effective_path.exists():
+    purchase_effective = len(pd.read_csv(effective_path, dtype=str, encoding="utf-8-sig"))
+    if purchase_original is not None:
+        blacklist_removed = purchase_original - purchase_effective
 if filtered_purchase_csv.exists():
     purchase_after = len(pd.read_csv(filtered_purchase_csv, dtype=str, encoding="utf-8-sig"))
 if filter_result_csv.exists():
@@ -435,7 +451,10 @@ summary = pd.DataFrame(
         {"指标": "总步骤数", "值": total_steps},
         {"指标": "成功步骤数", "值": ok_steps},
         {"指标": "步骤成功率(%)", "值": round(success_rate, 2)},
-        {"指标": "过滤前基金数", "值": purchase_before},
+        {"指标": "原始基金数", "值": purchase_original},
+        {"指标": "黑名单剔除数", "值": blacklist_removed},
+        {"指标": "有效基金数", "值": purchase_effective},
+        {"指标": "过滤前基金数", "值": purchase_effective},
         {"指标": "过滤后基金数", "值": purchase_after},
         {"指标": "被过滤基金数", "值": filtered_yes},
     ]
@@ -451,7 +470,8 @@ lines = [
     "",
     "## 验收结论",
     f"- 步骤成功率: {ok_steps}/{total_steps} ({success_rate:.2f}%)",
-    f"- 过滤前后数量: {purchase_before} -> {purchase_after}",
+    f"- 原始/黑名单剔除/有效: {purchase_original} / {blacklist_removed} / {purchase_effective}",
+    f"- 过滤前后数量: {purchase_effective} -> {purchase_after}",
     f"- 被过滤基金数: {filtered_yes}",
     f"- 异常分布: {err_text}",
     "",
@@ -500,10 +520,42 @@ wait_mysql_ready
 wait_clickhouse_ready
 finish_step "success"
 
+start_step "step1a_prepare_purchase"
+if has_checkpoint "step2_fund_etl"; then
+  echo "[full-run] step 1a: checkpoint hit, fund_purchase already exists"
+  assert_csv_has_rows "${FUND_ETL_DIR}/fund_purchase.csv"
+elif [[ -n "${LOCAL_PURCHASE_CSV}" ]]; then
+  echo "[full-run] step 1a: copy local purchase csv"
+  cp "${LOCAL_PURCHASE_CSV}" "${FUND_ETL_DIR}/fund_purchase.csv"
+  assert_purchase_csv_valid "${FUND_ETL_DIR}/fund_purchase.csv" || {
+    echo "[full-run] copied purchase csv is invalid: ${FUND_ETL_DIR}/fund_purchase.csv"
+    exit 1
+  }
+else
+  echo "[full-run] step 1a: fund_etl step1 (fetch purchase from akshare)"
+  "${PYTHON_BIN}" src/fund_etl.py \
+    --run-id "${RUN_ID}" \
+    --mode step1 \
+    --max-retries "${ETL_MAX_RETRIES}" \
+    --retry-sleep "${ETL_RETRY_SLEEP}"
+fi
+assert_csv_has_rows "${FUND_ETL_DIR}/fund_purchase.csv"
+finish_step "success"
+
+start_step "step1b_build_effective_purchase"
+echo "[full-run] step 1b: build fund_purchase_effective from fund_purchase - blacklist"
+"${PYTHON_BIN}" src/transforms/build_effective_purchase_csv.py \
+  --purchase-csv "${FUND_ETL_DIR}/fund_purchase.csv" \
+  --blacklist-csv "${FUND_BLACKLIST_PATH}" \
+  --output-csv "${FUND_PURCHASE_EFFECTIVE_CSV}"
+assert_csv_has_rows "${FUND_PURCHASE_EFFECTIVE_CSV}"
+finish_step "success"
+
 start_step "step2_fund_etl"
 if has_checkpoint "step2_fund_etl"; then
   echo "[full-run] step 2/7: checkpoint hit, skip fund_etl"
   assert_csv_has_rows "${FUND_ETL_DIR}/fund_purchase.csv"
+  assert_csv_has_rows "${FUND_PURCHASE_EFFECTIVE_CSV}"
   assert_csv_has_rows "${FUND_ETL_DIR}/fund_overview.csv"
   assert_dir_has_csv "${FUND_ETL_DIR}/fund_nav_by_code"
   assert_dir_has_csv "${FUND_ETL_DIR}/fund_bonus_by_code"
@@ -512,15 +564,11 @@ if has_checkpoint "step2_fund_etl"; then
   assert_dir_has_csv "${FUND_ETL_DIR}/fund_cum_return_by_code"
 else
   if [[ -n "${LOCAL_PURCHASE_CSV}" ]]; then
-    echo "[full-run] step 2/7: local purchase csv + fund_etl (verify + step2~step7)"
-    cp "${LOCAL_PURCHASE_CSV}" "${FUND_ETL_DIR}/fund_purchase.csv"
-    assert_purchase_csv_valid "${FUND_ETL_DIR}/fund_purchase.csv" || {
-      echo "[full-run] copied purchase csv is invalid: ${FUND_ETL_DIR}/fund_purchase.csv"
-      exit 1
-    }
+    echo "[full-run] step 2/7: fund_etl verify + step2~step7 (using fund_purchase_effective)"
     "${PYTHON_BIN}" src/fund_etl.py \
       --run-id "${RUN_ID}" \
       --mode verify \
+      --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}" \
       --max-retries "${ETL_MAX_RETRIES}" \
       --retry-sleep "${ETL_RETRY_SLEEP}" \
       --max-workers "${ETL_MAX_WORKERS}" \
@@ -529,20 +577,32 @@ else
       "${PYTHON_BIN}" src/fund_etl.py \
         --run-id "${RUN_ID}" \
         --mode "${mode}" \
+        --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}" \
         --max-retries "${ETL_MAX_RETRIES}" \
         --retry-sleep "${ETL_RETRY_SLEEP}" \
         --max-workers "${ETL_MAX_WORKERS}" \
         --progress-interval "${ETL_PROGRESS_INTERVAL}"
     done
   else
-    echo "[full-run] step 2/7: full fund_etl (verify + step1~step7)"
+    echo "[full-run] step 2/7: fund_etl verify + step2~step7 (using fund_purchase_effective)"
     "${PYTHON_BIN}" src/fund_etl.py \
       --run-id "${RUN_ID}" \
-      --mode all \
+      --mode verify \
+      --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}" \
       --max-retries "${ETL_MAX_RETRIES}" \
       --retry-sleep "${ETL_RETRY_SLEEP}" \
       --max-workers "${ETL_MAX_WORKERS}" \
       --progress-interval "${ETL_PROGRESS_INTERVAL}"
+    for mode in step2 step3 step4 step5 step6 step7; do
+      "${PYTHON_BIN}" src/fund_etl.py \
+        --run-id "${RUN_ID}" \
+        --mode "${mode}" \
+        --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}" \
+        --max-retries "${ETL_MAX_RETRIES}" \
+        --retry-sleep "${ETL_RETRY_SLEEP}" \
+        --max-workers "${ETL_MAX_WORKERS}" \
+        --progress-interval "${ETL_PROGRESS_INTERVAL}"
+    done
   fi
   assert_csv_has_rows "${FUND_ETL_DIR}/fund_purchase.csv"
   assert_csv_has_rows "${FUND_ETL_DIR}/fund_overview.csv"
@@ -618,6 +678,7 @@ else
   echo "[full-run] step 6/7: filter fund list before step10"
   "${PYTHON_BIN}" src/filter_funds_for_next_step.py \
     --base-dir "${FUND_ETL_DIR}" \
+    --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}" \
     --compare-details-dir "${ARTIFACTS_DIR}/fund_return_compare/details" \
     --integrity-details-dir "${INTEGRITY_DETAILS_DIR}" \
     --start-date "${FILTER_START_DATE}" \
@@ -633,7 +694,7 @@ if has_checkpoint "step6b_filtered_purchase"; then
   echo "[full-run] step 6b: checkpoint hit, skip filtered purchase generation"
 else
   "${PYTHON_BIN}" src/transforms/build_filtered_purchase_csv.py \
-    --purchase-csv "${FUND_ETL_DIR}/fund_purchase.csv" \
+    --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}" \
     --filter-csv "${FILTER_RESULT_CSV}" \
     --output-csv "${FILTERED_PURCHASE_CSV}"
   mark_checkpoint "step6b_filtered_purchase"

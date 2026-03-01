@@ -192,6 +192,8 @@ FILTER_MAX_ABS_DEVIATION="${FILTER_MAX_ABS_DEVIATION:-0.02}"
 VERIFY_SCOREBOARD_CH_WRITE_PROFILE="${VERIFY_SCOREBOARD_CH_WRITE_PROFILE:-fast}"
 FILTER_RESULT_CSV="${ARTIFACTS_DIR}/filtered_fund_candidates.csv"
 FILTERED_PURCHASE_CSV="${FUND_ETL_DIR}/fund_purchase_for_step10_filtered.csv"
+FUND_PURCHASE_EFFECTIVE_CSV="${FUND_ETL_DIR}/fund_purchase_effective.csv"
+FUND_BLACKLIST_PATH="${FUND_BLACKLIST_PATH:-${PROJECT_ROOT}/data/common/fund_blacklist.csv}"
 RUN_REPORT_STEPS_CSV="${ARTIFACTS_DIR}/run_report_steps.csv"
 RUN_REPORT_SUMMARY_CSV="${ARTIFACTS_DIR}/run_report_summary.csv"
 RUN_REPORT_MD="${ARTIFACTS_DIR}/run_report.md"
@@ -468,13 +470,21 @@ PY
 assert_csv_has_rows "${FUND_ETL_DIR}/fund_purchase.csv"
 finish_step "success"
 
+start_step "step5b_build_effective_purchase"
+"${PYTHON_BIN}" src/transforms/build_effective_purchase_csv.py \
+  --purchase-csv "${FUND_ETL_DIR}/fund_purchase.csv" \
+  --blacklist-csv "${FUND_BLACKLIST_PATH}" \
+  --output-csv "${FUND_PURCHASE_EFFECTIVE_CSV}"
+assert_csv_has_rows "${FUND_PURCHASE_EFFECTIVE_CSV}"
+finish_step "success"
+
 start_step "step6_fund_etl_step2_to_step7"
-"${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step2 --max-workers 8
-"${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step3
-"${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step4
-"${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step5
-"${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step6
-"${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step7
+"${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step2 --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}" --max-workers 8
+"${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step3 --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}"
+"${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step4 --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}"
+"${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step5 --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}"
+"${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step6 --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}"
+"${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step7 --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}"
 assert_csv_has_rows "${FUND_ETL_DIR}/fund_overview.csv"
 assert_dir_has_csv "${FUND_ETL_DIR}/fund_nav_by_code"
 assert_dir_has_csv "${FUND_ETL_DIR}/fund_bonus_by_code"
@@ -522,6 +532,7 @@ finish_step "success"
 start_step "step9_5_filter_and_filtered_purchase"
 "${PYTHON_BIN}" src/filter_funds_for_next_step.py \
   --base-dir "${FUND_ETL_DIR}" \
+  --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}" \
   --compare-details-dir "${ARTIFACTS_DIR}/fund_return_compare/details" \
   --integrity-details-dir "${ARTIFACTS_DIR}/trade_day_integrity_reports/details_2025-01-01_2025-12-31" \
   --start-date "${FILTER_START_DATE}" \
@@ -530,7 +541,7 @@ start_step "step9_5_filter_and_filtered_purchase"
 assert_csv_has_rows "${FILTER_RESULT_CSV}"
 
 "${PYTHON_BIN}" src/transforms/build_filtered_purchase_csv.py \
-  --purchase-csv "${FUND_ETL_DIR}/fund_purchase.csv" \
+  --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}" \
   --filter-csv "${FILTER_RESULT_CSV}" \
   --output-csv "${FILTERED_PURCHASE_CSV}"
 assert_csv_has_rows "${FILTERED_PURCHASE_CSV}"

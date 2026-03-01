@@ -28,6 +28,7 @@ myanalyser/
 - `fund_etl` 结果目录：`data/versions/{run_id}/fund_etl`
 - 错误日志目录（与结果分离）：`data/versions/{run_id}/logs`
 - 公共交易日历：`data/common/trade_dates.csv`
+- 基金黑名单：`data/common/fund_blacklist.csv`（可选，格式含 `基金代码` 列；通过 `FUND_BLACKLIST_PATH` 覆盖路径）
 
 ## 核心脚本
 
@@ -41,6 +42,7 @@ myanalyser/
 - `src/verify_scoreboard_recalc.py`：榜单指标独立重算核验（从 fund_etl 中间数据重算并与导出榜单比对，支持 `--latest-nav-date`）
 - `src/contracts/pipeline_contracts.py`：关键中间产物契约（列名/类型/非空/唯一键、目录 CSV 文件数量）
 - `src/validators/validate_pipeline_artifacts.py`：按 stage 执行契约校验（失败返回非 0）
+- `src/transforms/build_effective_purchase_csv.py`：从 `fund_purchase` 剔除黑名单生成 `fund_purchase_effective.csv`（不修改原始 purchase）
 - `src/transforms/build_filtered_purchase_csv.py`：根据过滤结果生成 `fund_purchase_for_step10_filtered.csv`
 
 ## 常用命令

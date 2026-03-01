@@ -142,6 +142,7 @@ def filter_funds_for_next_step(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="按 Step9 后数据质量过滤可进入下一步的基金列表")
     parser.add_argument("--base-dir", required=True, type=Path, help="fund_etl 目录，包含 fund_purchase.csv 等")
+    parser.add_argument("--purchase-csv", default=None, type=Path, help="申购列表 CSV（默认优先 fund_purchase_effective.csv，否则 fund_purchase.csv）")
     parser.add_argument("--compare-details-dir", required=True, type=Path, help="Step9 compare 明细目录（.../fund_return_compare/details）")
     parser.add_argument(
         "--integrity-details-dir",
@@ -163,10 +164,17 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     base_dir = args.base_dir.resolve()
+    _effective = base_dir / "fund_purchase_effective.csv"
+    _fallback = base_dir / "fund_purchase.csv"
+    purchase_csv = (
+        args.purchase_csv.resolve()
+        if args.purchase_csv
+        else (_effective if _effective.exists() else _fallback)
+    )
     output_csv = args.output_csv.resolve() if args.output_csv else (base_dir / "filtered_fund_candidates.csv")
     validate_stage_or_raise(
         "filter_input",
-        purchase_csv=base_dir / "fund_purchase.csv",
+        purchase_csv=purchase_csv,
         overview_csv=base_dir / "fund_overview.csv",
         nav_dir=base_dir / "fund_nav_by_code",
         adjusted_nav_dir=base_dir / "fund_adjusted_nav_by_code",
@@ -175,7 +183,7 @@ def main() -> None:
     )
 
     result_df = filter_funds_for_next_step(
-        purchase_csv=base_dir / "fund_purchase.csv",
+        purchase_csv=purchase_csv,
         overview_csv=base_dir / "fund_overview.csv",
         nav_dir=base_dir / "fund_nav_by_code",
         adjusted_nav_dir=base_dir / "fund_adjusted_nav_by_code",

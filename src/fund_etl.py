@@ -804,6 +804,12 @@ def main() -> None:
     parser.add_argument("--run-id", default=None, help="数据版本目录名（默认 YYYYMMDD_HHMMSS[可选后缀]）")
     parser.add_argument("--run-id-suffix", default=None, help="run_id 后缀描述，会拼接到时间戳后")
     parser.add_argument(
+        "--purchase-csv",
+        default=None,
+        type=Path,
+        help="覆盖默认 fund_purchase.csv 路径（用于黑名单剔除后的 fund_purchase_effective）",
+    )
+    parser.add_argument(
         "--mode",
         choices=[
             "all",
@@ -836,6 +842,8 @@ def main() -> None:
     base_dir = Path(args.base_dir).resolve() if args.base_dir else (root / "data" / "versions" / run_id / "fund_etl")
     logs_dir = root / "data" / "versions" / run_id / "logs"
     paths = _default_paths(base_dir=base_dir, logs_dir=logs_dir)
+    if args.purchase_csv is not None:
+        paths["purchase_csv"] = Path(args.purchase_csv).resolve()
     retry_cfg = RetryConfig(max_retries=args.max_retries, retry_sleep_seconds=args.retry_sleep)
     progress_cfg = ProgressConfig(print_interval_seconds=args.progress_interval)
     print(f"[run] run_id={run_id}")

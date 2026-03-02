@@ -19,6 +19,9 @@ from myanalyser.src.filter_score.filters.most_stable import filter_one as filter
 from myanalyser.src.filter_score.filters.non_a_unlimited_purchase import (
     filter_one as filter_non_a_unlimited,
 )
+from myanalyser.src.filter_score.filters.steady_aggressive import (
+    filter_one as filter_steady_aggressive,
+)
 
 
 class FilterScoreTest(unittest.TestCase):
@@ -142,6 +145,67 @@ class FilterScoreTest(unittest.TestCase):
         self.assertFalse(is_filtered)
         self.assertEqual(reason, "")
 
+    def test_steady_aggressive_filter_pass(self) -> None:
+        """满足偏稳进取原则的行应通过。"""
+        row = {
+            "近1年年化收益率": 5.0,
+            "近3年年化收益率": 6.0,
+            "近3年上涨季度比例": 85,
+            "近3年上涨月份比例": 65,
+            "近3年最大回撤率": 8.0,
+        }
+        is_filtered, reason = filter_steady_aggressive(row)
+        self.assertFalse(is_filtered)
+        self.assertEqual(reason, "")
+
+    def test_steady_aggressive_filter_fail_low_return(self) -> None:
+        """近1年年化收益率<=4 应被过滤。"""
+        row = {
+            "近1年年化收益率": 3.5,
+            "近3年年化收益率": 6.0,
+            "近3年上涨季度比例": 85,
+            "近3年上涨月份比例": 65,
+            "近3年最大回撤率": 8.0,
+        }
+        is_filtered, reason = filter_steady_aggressive(row)
+        self.assertTrue(is_filtered)
+        self.assertIn("近1年年化收益率", reason)
+
+    def test_steady_aggressive_filter_fail_low_month_ratio(self) -> None:
+        """近3年上涨月份比例<=60 应被过滤。"""
+        row = {
+            "近1年年化收益率": 5.0,
+            "近3年年化收益率": 6.0,
+            "近3年上涨季度比例": 85,
+            "近3年上涨月份比例": 55,
+            "近3年最大回撤率": 8.0,
+        }
+        is_filtered, reason = filter_steady_aggressive(row)
+        self.assertTrue(is_filtered)
+        self.assertIn("近3年上涨月份比例", reason)
+
+    def test_steady_aggressive_filter_fail_high_drawdown(self) -> None:
+        """近3年最大回撤率>=10 应被过滤。"""
+        row = {
+            "近1年年化收益率": 5.0,
+            "近3年年化收益率": 6.0,
+            "近3年上涨季度比例": 85,
+            "近3年上涨月份比例": 65,
+            "近3年最大回撤率": 12.0,
+        }
+        is_filtered, reason = filter_steady_aggressive(row)
+        self.assertTrue(is_filtered)
+        self.assertIn("近3年最大回撤率", reason)
+
+    def test_load_steady_aggressive_filter_strategy(self) -> None:
+        """应能加载 steady_aggressive 过滤脚本。"""
+        path = Path(__file__).resolve().parents[1] / "src/filter_score/filters/steady_aggressive.py"
+        self.assertTrue(path.exists())
+        strategy = load_filter_strategy(path)
+        self.assertEqual(strategy.STRATEGY_NAME, "偏稳进取原则")
+        is_f, _ = strategy.filter_one({"近3年年化收益率": 3})
+        self.assertTrue(is_f)
+
     def test_load_non_a_unlimited_filter_strategy(self) -> None:
         """应能加载 non_a_unlimited_purchase 过滤脚本。"""
         path = Path(__file__).resolve().parents[1] / "src/filter_score/filters/non_a_unlimited_purchase.py"
@@ -185,6 +249,33 @@ class FilterScoreTest(unittest.TestCase):
         out = strategy.compute_score(df)
         self.assertIn("综合得分", out.columns)
         self.assertIn("得分_风险控制", out.columns)
+
+    def test_load_score_strategy_steady_profit_priority(self) -> None:
+        """应能加载 偏稳收益优先 算分脚本，使用自定义权重。"""
+        path = Path(__file__).resolve().parents[1] / "src/filter_score/scores/steady_profit_priority.py"
+        self.assertTrue(path.exists())
+        strategy = load_score_strategy(path)
+        self.assertEqual(strategy.STRATEGY_NAME, "偏稳收益优先")
+        df = pd.DataFrame({
+            "基金代码": ["001"],
+            "基金名称": ["A"],
+            "近1年最大回撤率": [0.05],
+            "近3年最长回撤修复天数": [50],
+            "近3年最大回撤率": [0.10],
+            "近1年卡玛比率": [6.0],
+            "近1年年化收益率": [4.0],
+            "最近一个月涨跌幅": [0.3],
+            "近1年上涨星期比例": [75],
+            "近3年上涨月份比例": [80],
+            "近1年周涨跌幅标准差": [0.15],
+            "近3年卡玛比率": [5.0],
+            "近3年年化收益率": [4.5],
+            "近3年夏普比率": [1.8],
+        })
+        out = strategy.compute_score(df)
+        self.assertIn("综合得分", out.columns)
+        self.assertIn("得分_风险控制", out.columns)
+        self.assertIn("得分_短期业绩", out.columns)
 
     def test_run_pipeline_smoke(self) -> None:
         """端到端：小样本 CSV + 最稳健过滤 + 低风险偏债算分。"""

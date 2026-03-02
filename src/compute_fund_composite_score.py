@@ -78,17 +78,27 @@ def _compute_group_score(df: pd.DataFrame, metrics: list[tuple[str, float, str]]
     return total / weight_sum
 
 
-def compute_composite_score(df: pd.DataFrame) -> pd.DataFrame:
-    """计算二级指标与综合得分，返回带新列的 DataFrame（不修改原 df）。"""
+def compute_composite_score(
+    df: pd.DataFrame,
+    secondary_groups: list[tuple[str, float, list[tuple[str, float, str]]]] | None = None,
+) -> pd.DataFrame:
+    """计算二级指标与综合得分，返回带新列的 DataFrame（不修改原 df）。
+
+    Args:
+        df: 输入 DataFrame，含所需指标列。
+        secondary_groups: 可选，自定义分组与权重，格式同 SECONDARY_GROUPS。
+            为 None 时使用默认 SECONDARY_GROUPS。
+    """
+    groups = secondary_groups if secondary_groups is not None else SECONDARY_GROUPS
     out = df.copy()
 
-    for group_name, group_weight, metrics in SECONDARY_GROUPS:
+    for group_name, group_weight, metrics in groups:
         col_score = f"得分_{group_name}"
         out[col_score] = _compute_group_score(out, metrics)
 
     # 综合得分
     composite = pd.Series(0.0, index=out.index)
-    for group_name, group_weight, _ in SECONDARY_GROUPS:
+    for group_name, group_weight, _ in groups:
         col = f"得分_{group_name}"
         if col in out.columns:
             composite = composite + group_weight * out[col].fillna(0)

@@ -624,6 +624,18 @@ assert_csv_has_rows "${BACKTEST_DIR}/backtest_window_detail.csv"
 assert_file_exists "${BACKTEST_DIR}/backtest_report.md"
 finish_step "success"
 
+start_step "step10b_filter_and_score"
+FILTER_SCORE_WORK_DIR="${ARTIFACTS_DIR}/filter_score"
+bash tools/run_filter_and_score.sh \
+  -i "${SCOREBOARD_DIR}/fund_scoreboard_${DATA_VERSION}.csv" \
+  -w "${FILTER_SCORE_WORK_DIR}" \
+  -f src/filter_score/filters/most_stable.py \
+  -s src/filter_score/scores/low_risk_debt.py \
+  --progress-interval 0
+assert_csv_has_rows "${FILTER_SCORE_WORK_DIR}/filter_result.csv"
+assert_csv_has_rows "${FILTER_SCORE_WORK_DIR}/scored_result.csv"
+finish_step "success"
+
 start_step "step11_scoreboard_recalc_verify"
 "${PYTHON_BIN}" src/verify_scoreboard_recalc.py \
   --scoreboard-csv "${SCOREBOARD_DIR}/fund_scoreboard_${DATA_VERSION}.csv" \
@@ -660,4 +672,5 @@ echo "[verify] integrity_summary=${SUMMARY_CSV}"
 echo "[verify] scoreboard_csv=${SCOREBOARD_DIR}/fund_scoreboard_${DATA_VERSION}.csv"
 echo "[verify] backtest_report=${BACKTEST_DIR}/backtest_report.md"
 echo "[verify] scoreboard_recheck_summary=${ARTIFACTS_DIR}/scoreboard_recheck/summary.csv"
+echo "[verify] filter_score_result=${FILTER_SCORE_WORK_DIR}/scored_result.csv"
 echo "[verify] run_report=${RUN_REPORT_MD}"

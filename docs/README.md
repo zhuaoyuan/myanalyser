@@ -45,6 +45,7 @@ myanalyser/
 - `src/transforms/build_effective_purchase_csv.py`：从 `fund_purchase` 剔除黑名单生成 `fund_purchase_effective.csv`（不修改原始 purchase）
 - `src/transforms/build_filtered_purchase_csv.py`：根据过滤结果生成 `fund_purchase_for_step10_filtered.csv`
 - `src/compute_fund_composite_score.py`：基金综合得分计算（对 filtered/scoreboard CSV 做归一化+分组加权，输出带得分的 CSV）
+- `src/filter_score/`：筛选与打分模块（入口 `filter_and_score_main.py`，可扩展过滤与算分策略，内置样例：最稳健原则过滤、低风险偏债得分）
 
 ## 常用命令
 
@@ -159,6 +160,18 @@ python src/compute_fund_composite_score.py \
   -o artifacts/composite_score_output.csv
 ```
 
+```bash
+# 11) 筛选与打分模块化流水线（可扩展过滤策略 + 算分策略）
+# 输入：fund_scoreboard CSV、0~多个过滤脚本、1 个算分脚本、工作目录
+# 产物：filter_result.csv（中间，含过滤结果）、scored_result.csv（最终）
+bash tools/run_filter_and_score.sh \
+  -i result_example/fund_scoreboard_20260301_1_formal_retry_step4_rerun_db.csv \
+  -w artifacts/filter_score_run \
+  -f src/filter_score/filters/most_stable.py \
+  -s src/filter_score/scores/low_risk_debt.py
+# 可多次 -f 指定多个过滤脚本
+```
+
 ## 依赖
 
 ```bash
@@ -175,6 +188,7 @@ pip install akshare pandas numpy pymysql
 
 - 单测回归（`tests/test_*.py`）
 - 核心 CLI smoke（`fund_etl`、`pipeline_scoreboard`、`backtest_portfolio`、`compare_adjusted_nav_and_cum_return`、`check_trade_day_data_integrity`）
+- Step 10b 筛选与打分（消费 scoreboard，产出 `filter_result.csv`、`scored_result.csv`）
 - 启动 `fund_db_infra`（MySQL + ClickHouse）
 - ETL 抽样数据链路（step1~step7，抽样 21 只：前 20 + `163402`）
 - 复权净值计算、交易日完整性检查、复权收益率一致性比对
@@ -215,6 +229,7 @@ VERIFY_SCOREBOARD_CH_WRITE_PROFILE=safe bash tools/verify.sh
 - `data/versions/{RUN_ID}/logs`
 - `artifacts/verify_{RUN_ID}/scoreboard`
 - `artifacts/verify_{RUN_ID}/backtest`
+- `artifacts/verify_{RUN_ID}/filter_score`（filter_result.csv、scored_result.csv）
 - `artifacts/verify_{RUN_ID}/scoreboard_recheck`
 - `artifacts/verify_{RUN_ID}/run_report_steps.csv`
 - `artifacts/verify_{RUN_ID}/run_report_summary.csv`

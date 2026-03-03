@@ -1,0 +1,7 @@
+# 顶层依赖（用于 pip install -r requirements.txt 或 pip-tools 输入）
+# 精确版本见 requirements-lock.txt，复现环境请使用：pip install -r requirements-lock.txt
+akshare>=1.18
+pandas>=2.0
+numpy>=1.24
+PyMySQL>=1.1
+clickhouse-connect>=0.11

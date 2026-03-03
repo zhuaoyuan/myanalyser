@@ -172,13 +172,39 @@ bash tools/run_filter_and_score.sh \
 # 可多次 -f 指定多个过滤脚本
 ```
 
-## 依赖
-
 ```bash
-pip install akshare pandas numpy pymysql
+# 生成 scored_result 静态 HTML + ECharts 可视化
+python tools/gen_scoreboard_html.py \
+  -i artifacts/filter_score_run_3/scored_result.csv \
+  -o artifacts/filter_score_run_3/scoreboard.html
+# 输出单文件 HTML，可直接用浏览器打开，包含：综合排名、雷达图、风险-收益散点、得分分布、明细表
 ```
 
-数据库联调需本地可用 Docker（用于 `fund_db_infra` 的 MySQL + ClickHouse）。
+## 依赖
+
+### Python 版本
+
+- 建议使用 **Python 3.12.x**，项目通过 `myanalyser/.python-version` 锁定为 `3.12.12`（pyenv 自动读取）。
+- 虚拟环境路径：`myanalyser/.venv312`
+
+### pip 依赖
+
+**复现环境（推荐，精确锁定版本）：**
+
+```bash
+source myanalyser/.venv312/bin/activate
+pip install -r myanalyser/requirements-lock.txt
+```
+
+**仅安装顶层依赖（允许传递依赖自动解析）：**
+
+```bash
+pip install -r myanalyser/requirements.txt
+```
+
+### Docker 基础设施
+
+数据库联调需本地可用 Docker（用于 `fund_db_infra` 的 MySQL + ClickHouse）。镜像已锁定：`mysql:8.4`、`clickhouse/clickhouse-server:25.8`。
 
 ## 两类全流程脚本
 

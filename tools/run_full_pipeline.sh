@@ -50,7 +50,7 @@
 #
 # 注意：
 # - 仅支持 0 或 1 个位置参数；若传入，必须是 @<csv_path> 格式。
-# - 建议先激活 venv，或确保 python/python3 在 PATH 中可用。
+# - 建议先激活 venv，或确保 python/python3 在 PATH 中可用；复现环境请使用 pip install -r requirements-lock.txt。
 # - 默认输出目录在 myanalyser/artifacts 和 myanalyser/data/versions 下。
 
 set -euo pipefail

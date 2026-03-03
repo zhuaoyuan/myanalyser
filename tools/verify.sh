@@ -24,6 +24,7 @@
 # - `PROJECT_ROOT` 指向 `myanalyser`，`WORKSPACE_ROOT` 指向上层 `finance`。
 # - 数据库基础设施固定用 `fund_db_infra/docker-compose.yml`。
 # - 若未激活虚拟环境，只给 warning，不强制失败（可跑，但存在依赖版本漂移风险）。
+# - 复现环境请使用 pip install -r requirements-lock.txt，与 .python-version 共同保证可复现性。
 
 # ### 2) Python 和运行参数
 

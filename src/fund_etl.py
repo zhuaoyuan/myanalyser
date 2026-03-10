@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import json
+import shutil
+import sys
 import time
 import types
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
@@ -794,6 +797,66 @@ def _default_paths(base_dir: Path, logs_dir: Path) -> dict[str, Path]:
     }
 
 
+def _copy_csv_dir(src_dir: Path, dst_dir: Path) -> None:
+    if not src_dir.exists():
+        return
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    for path in src_dir.glob("*.csv"):
+        if path.is_file():
+            shutil.copy2(path, dst_dir / path.name)
+
+
+def _run_bonus_split_vote(
+    *,
+    python_bin: str,
+    run_id: str,
+    current_root: Path,
+    history_root: Path,
+    purchase_csv: Path,
+    revised_bonus_dir: Path,
+    revised_split_dir: Path,
+    project_root_dir: Path,
+    max_retries: int,
+    retry_sleep: float,
+    progress_interval: float,
+) -> Path:
+    archive_root = (
+        project_root_dir
+        / "data"
+        / "common"
+        / "revise"
+        / f"{date.today().strftime('%Y%m%d')}_{run_id}_revised"
+        / "fund_etl"
+    )
+    vote_script = project_root_dir / "tools" / "fund_bonus_split_vote.py"
+    cmd = [
+        python_bin,
+        str(vote_script),
+        "--current-root",
+        str(current_root),
+        "--history-root",
+        str(history_root),
+        "--out-root",
+        str(archive_root),
+        "--purchase-csv",
+        str(purchase_csv),
+        "--out-bonus-dir",
+        str(revised_bonus_dir),
+        "--out-split-dir",
+        str(revised_split_dir),
+        "--max-retries",
+        str(max_retries),
+        "--retry-sleep",
+        str(retry_sleep),
+        "--progress-interval",
+        str(progress_interval),
+    ]
+    subprocess.run(cmd, check=True)
+    _copy_csv_dir(revised_bonus_dir, archive_root / "fund_bonus_by_code")
+    _copy_csv_dir(revised_split_dir, archive_root / "fund_split_by_code")
+    return archive_root
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="AkShare 基金数据采集脚本")
     parser.add_argument(
@@ -835,6 +898,12 @@ def main() -> None:
     parser.add_argument("--retry-sleep", type=float, default=1.0)
     parser.add_argument("--max-workers", type=int, default=8)
     parser.add_argument("--progress-interval", type=float, default=5.0)
+    parser.add_argument(
+        "--bonus-split-revise-root",
+        type=Path,
+        default=None,
+        help="历史修订版 fund_etl 目录（用于分红/拆分投票校对）",
+    )
     args = parser.parse_args()
 
     root = project_root()
@@ -846,6 +915,7 @@ def main() -> None:
         paths["purchase_csv"] = Path(args.purchase_csv).resolve()
     retry_cfg = RetryConfig(max_retries=args.max_retries, retry_sleep_seconds=args.retry_sleep)
     progress_cfg = ProgressConfig(print_interval_seconds=args.progress_interval)
+    bonus_split_revise_root = args.bonus_split_revise_root.resolve() if args.bonus_split_revise_root else None
     print(f"[run] run_id={run_id}")
     print(f"[run] fund_etl_dir={base_dir}")
     print(f"[run] logs_dir={logs_dir}")
@@ -906,6 +976,26 @@ def main() -> None:
             progress_cfg=progress_cfg,
         )
         print(f"[step5] {summary}")
+        if bonus_split_revise_root is not None:
+            if not bonus_split_revise_root.exists():
+                raise FileNotFoundError(f"bonus-split revise root not found: {bonus_split_revise_root}")
+            revised_bonus_dir = base_dir / "revised_fund_bonus_by_code"
+            revised_split_dir = base_dir / "revised_fund_split_by_code"
+            archive_root = _run_bonus_split_vote(
+                python_bin=sys.executable,
+                run_id=run_id,
+                current_root=base_dir,
+                history_root=bonus_split_revise_root,
+                purchase_csv=paths["purchase_csv"],
+                revised_bonus_dir=revised_bonus_dir,
+                revised_split_dir=revised_split_dir,
+                project_root_dir=root,
+                max_retries=args.max_retries,
+                retry_sleep=args.retry_sleep,
+                progress_interval=args.progress_interval,
+            )
+            print(f"[step5] bonus/split revised saved: {revised_bonus_dir} {revised_split_dir}")
+            print(f"[step5] bonus/split archive saved: {archive_root}")
 
     if args.mode in {"step6", "all"}:
         validate_stage_or_raise("fund_etl_step6_input", purchase_csv=paths["purchase_csv"])

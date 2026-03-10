@@ -24,11 +24,11 @@ import akshare as ak
 # fund_purchase_em_df = ak.fund_purchase_em()
 # print(fund_purchase_em_df)
 
-fund_open_fund_info_em_df = ak.fund_open_fund_info_em(symbol="161606", indicator="分红送配详情")
-print(fund_open_fund_info_em_df)
-
-fund_open_fund_info_em_df = ak.fund_open_fund_info_em(symbol="000084", indicator="分红送配详情")
-print(fund_open_fund_info_em_df)
+# fund_open_fund_info_em_df = ak.fund_open_fund_info_em(symbol="161606", indicator="分红送配详情")
+# print(fund_open_fund_info_em_df)
+for i in range(1000):
+    fund_open_fund_info_em_df = ak.fund_open_fund_info_em(symbol="000061", indicator="分红送配详情")
+    print(fund_open_fund_info_em_df)
 #        年份       权益登记日         除息日          每份分红       分红发放日
 # 0   2021年  2021-12-16  2021-12-16  每份派现金0.1584元  2021-12-20
 # 1   2020年  2020-08-10  2020-08-10  每份派现金0.0820元  2020-08-12
@@ -46,14 +46,14 @@ print(fund_open_fund_info_em_df)
 # 13  2006年  2006-03-13  2006-03-13  每份派现金0.0760元  2006-03-15
 # 14  2006年  2006-01-24  2006-01-24  每份派现金0.0240元  2006-02-06
 
-fund_open_fund_info_em_df = ak.fund_open_fund_info_em(symbol="163402", indicator="拆分详情")
-print(fund_open_fund_info_em_df)
+# fund_open_fund_info_em_df = ak.fund_open_fund_info_em(symbol="163402", indicator="拆分详情")
+# print(fund_open_fund_info_em_df)
 #       年份       拆分折算日  拆分类型    拆分折算比例
 # 0  2007年  2007-05-11  份额折算  1:3.9939
 
 
-fund_open_fund_info_em_df = ak.fund_open_fund_info_em(symbol="163402", indicator="单位净值走势")
-print(fund_open_fund_info_em_df)
+# fund_open_fund_info_em_df = ak.fund_open_fund_info_em(symbol="163402", indicator="单位净值走势")
+# print(fund_open_fund_info_em_df)
 #             净值日期    单位净值  日增长率
 # 0     2005-11-03  1.0000  0.00
 # 1     2005-11-11  0.9999 -0.01
@@ -67,8 +67,8 @@ print(fund_open_fund_info_em_df)
 # 4935  2026-02-12  0.8105  0.95
 # 4936  2026-02-13  0.8002 -1.27
 
-fund_announcement_personnel_em_df = ak.fund_announcement_personnel_em(symbol="000001")
-print(fund_announcement_personnel_em_df)
+# fund_announcement_personnel_em_df = ak.fund_announcement_personnel_em(symbol="000001")
+# print(fund_announcement_personnel_em_df)
 
 #       基金代码                               公告标题    基金名称        公告日期                  报告ID
 # 0   000001    华夏基金管理有限公司关于调整华夏成长证券投资基金基金经理的公告  华夏成长混合  2013-06-29  AN201306290003484248
@@ -86,14 +86,14 @@ print(fund_announcement_personnel_em_df)
 
 
 
-fund_open_fund_info_em_df = ak.fund_open_fund_info_em(symbol="000141", indicator="累计收益率走势", period="成立来")
-print(fund_open_fund_info_em_df)
-#              日期   累计收益率
-# 0    2019-03-19    0.00
-# 1    2019-04-02    0.06
-# 2    2019-04-15    0.23
-# 3    2019-04-25    0.20
-# 4    2019-05-10   -1.68
-# ..          ...     ...
-# 207  2026-01-09  213.27
-# 208  2026-01-21  229.22
+# fund_open_fund_info_em_df = ak.fund_open_fund_info_em(symbol="000141", indicator="累计收益率走势", period="成立来")
+# print(fund_open_fund_info_em_df)
+# #              日期   累计收益率
+# # 0    2019-03-19    0.00
+# # 1    2019-04-02    0.06
+# # 2    2019-04-15    0.23
+# # 3    2019-04-25    0.20
+# # 4    2019-05-10   -1.68
+# # ..          ...     ...
+# # 207  2026-01-09  213.27
+# # 208  2026-01-21  229.22

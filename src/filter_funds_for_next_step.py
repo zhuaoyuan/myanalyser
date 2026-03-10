@@ -1,3 +1,17 @@
+"""Step9 后按数据质量过滤可进入下一步的基金列表。
+
+以申购列表为输入，逐基金检查 5 条规则，输出 filtered_fund_candidates.csv。
+
+规则：
+  1. 规则1: 基金必须在 fund_overview.csv 中
+  2. 规则2: 必须在 fund_nav_by_code 中存在 NAV 原始净值
+  3. 规则3: 必须在 fund_adjusted_nav_by_code 中存在复权净值
+  4. 规则4: Step9 compare 明细中，指定日期（默认 2023-01-01）后，
+    本地远程收益率偏差绝对值须 < max_abs_deviation（默认 2%）
+  5. 规则5: Step8 交易日完整性明细中，指定日期后各交易日数据须完整（该日期数据是否存在=是）
+
+任一规则不通过则「是否过滤=是」，过滤原因用分号拼接。下游由 build_filtered_purchase_csv 消费。
+"""
 from __future__ import annotations
 
 import argparse

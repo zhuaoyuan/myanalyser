@@ -27,7 +27,7 @@
     select { padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; margin-right: 8px; font-size: 0.9rem; }
     .controls { margin-bottom: 12px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
     .col-filter { width: 100%; max-width: 80px; padding: 2px 4px; font-size: 0.75rem; border: 1px solid #ddd; }
-    .nav-fund-picker { max-height: 220px; overflow-y: auto; border: 1px solid #eee; padding: 8px; margin-bottom: 8px; font-size: 0.8rem; display: flex; flex-wrap: wrap; gap: 6px; }
+    .nav-fund-picker { max-height: 120px; overflow-y: auto; border: 1px solid #eee; padding: 8px; margin-bottom: 8px; font-size: 0.8rem; display: flex; flex-wrap: wrap; gap: 6px; }
     .nav-fund-picker label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; cursor: pointer; }
     button { padding: 6px 12px; border: 1px solid #ddd; border-radius: 4px; background: #f8f9fa; cursor: pointer; }
     button:hover { background: #e9ecef; }
@@ -211,6 +211,7 @@
         grid: { left: 50, right: 30, top: 40, bottom: 80 },
         xAxis: { type: 'time', boundaryGap: false },
         yAxis: { name: '累计涨跌幅(%)', type: 'value', axisLabel: { formatter: '{value}%' } },
+        dataZoom: [{ type: 'inside', start: 0, end: 100 }, { type: 'slider', height: 20, bottom: 5 }],
         series
       };
       if (marks.length > 0) opt.markLine = { data: marks, symbol: ['none','none'] };
@@ -321,7 +322,6 @@
 
     function renderColCheckboxes() {
       const container = document.getElementById('colCheckboxes');
-      const toggle = document.getElementById('colVisToggle');
       container.innerHTML = COLUMNS.map(c => {
         const id = 'col_' + c.replace(/[^a-zA-Z0-9_]/g, '_');
         return `<label style="margin-right:8px"><input type="checkbox" id="${id}" ${colVisible[c]?'checked':''} data-col="${c}">${c}</label>`;
@@ -329,18 +329,9 @@
       container.querySelectorAll('input').forEach(cb => {
         cb.addEventListener('change', () => {
           colVisible[cb.dataset.col] = cb.checked;
-          if (toggle) toggle.checked = Object.values(colVisible).every(v => v);
           renderTable();
         });
       });
-      if (toggle) {
-        toggle.onclick = () => {
-          const next = toggle.checked;
-          COLUMNS.forEach(c => { colVisible[c] = next; });
-          container.querySelectorAll('input').forEach(cb => { cb.checked = next; });
-          renderTable();
-        };
-      }
     }
 
     document.addEventListener('DOMContentLoaded', () => {
@@ -355,14 +346,6 @@
         document.getElementById('navTimeRange')?.addEventListener('change', renderNavChart);
         document.getElementById('navShowPersonnel')?.addEventListener('change', renderNavChart);
         document.getElementById('navApplyTop10')?.addEventListener('click', applyNavTop10);
-        document.getElementById('navFundSelectAll')?.addEventListener('click', () => {
-          document.querySelectorAll('#navFundPicker input').forEach(cb => { cb.checked = true; });
-          renderNavChart();
-        });
-        document.getElementById('navFundSelectNone')?.addEventListener('click', () => {
-          document.querySelectorAll('#navFundPicker input').forEach(cb => { cb.checked = false; });
-          renderNavChart();
-        });
       }
     });
 

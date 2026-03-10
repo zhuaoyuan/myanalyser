@@ -27,12 +27,15 @@ myanalyser/
 - 每次跑数建议独立目录：`data/versions/{run_id}/`
 - `fund_etl` 结果目录：`data/versions/{run_id}/fund_etl`
 - 错误日志目录（与结果分离）：`data/versions/{run_id}/logs`
+- 分红/拆分校对结果：`data/versions/{run_id}/fund_etl/revised_fund_bonus_by_code`、`data/versions/{run_id}/fund_etl/revised_fund_split_by_code`
+- 校对留档目录：`data/common/revise/{YYYYMMDD}_{run_id}_revised/fund_etl`
 - 公共交易日历：`data/common/trade_dates.csv`
 - 基金黑名单：`data/common/fund_blacklist.csv`（可选，格式含 `基金代码` 列；通过 `FUND_BLACKLIST_PATH` 覆盖路径）
 
 ## 核心脚本
 
 - `src/fund_etl.py`：AkShare 拉数（step1~step7 + retry）
+- `tools/fund_bonus_split_vote.py`：分红/拆分数据多次爬取投票校对（供 fund_etl step5 后自动调用）
 - `src/adjusted_nav_tool.py`：复权净值计算
 - `src/compare_adjusted_nav_and_cum_return.py`：复权收益率一致性比对
 - `src/check_trade_day_data_integrity.py`：交易日完整性检查
@@ -57,6 +60,10 @@ python src/fund_etl.py --mode all
 python src/fund_etl.py --mode all --run-id 20260226_210000_test
 # 或
 python src/fund_etl.py --mode all --run-id-suffix smoke
+
+# 2.1) 启用分红/拆分校对（step5 后自动投票产出 revised 目录）
+python src/fund_etl.py --mode all \
+  --bonus-split-revise-root data/common/revise/20260310_final
 ```
 
 ```bash
@@ -64,11 +71,13 @@ python src/fund_etl.py --mode all --run-id-suffix smoke
 RUN_ID=20260226_210000_smoke
 python src/adjusted_nav_tool.py \
   --nav-dir data/versions/${RUN_ID}/fund_etl/fund_nav_by_code \
-  --bonus-dir data/versions/${RUN_ID}/fund_etl/fund_bonus_by_code \
-  --split-dir data/versions/${RUN_ID}/fund_etl/fund_split_by_code \
+  --bonus-dir data/versions/${RUN_ID}/fund_etl/revised_fund_bonus_by_code \
+  --split-dir data/versions/${RUN_ID}/fund_etl/revised_fund_split_by_code \
   --output-dir data/versions/${RUN_ID}/fund_etl/fund_adjusted_nav_by_code \
   --fail-log data/versions/${RUN_ID}/logs/failed_adjusted_nav.jsonl
 ```
+
+> 若未启用分红/拆分校对（或校对目录为空），可退回使用 `fund_bonus_by_code` / `fund_split_by_code`。
 
 ```bash
 # 4) 比对复权收益率与累计收益率
@@ -177,7 +186,10 @@ bash tools/run_filter_and_score.sh \
 python tools/gen_scoreboard_html.py \
   -i artifacts/filter_score_run_3/scored_result.csv \
   -o artifacts/filter_score_run_3/scoreboard.html
-# 输出单文件 HTML，可直接用浏览器打开，包含：综合排名、雷达图、风险-收益散点、得分分布、明细表
+# 可选 -f 指定 fund_etl 目录以显示净值走势图（需含 fund_adjusted_nav_by_code、fund_personnel_by_code）
+python tools/gen_scoreboard_html.py -i scored_result.csv -o scoreboard.html \
+  -f finance-runs/run_xxx/data/versions/xxx/fund_etl
+# 输出单文件 HTML，包含：综合排名、雷达图、风险-收益散点（近1年）、明细表（全列筛选/排序/勾选显示）、净值走势图（可选）
 ```
 
 ## 依赖

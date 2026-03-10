@@ -200,6 +200,7 @@ RUN_REPORT_SUMMARY_CSV="${ARTIFACTS_DIR}/run_report_summary.csv"
 RUN_REPORT_MD="${ARTIFACTS_DIR}/run_report.md"
 CURRENT_STEP=""
 STEP_START_TS=0
+BONUS_SPLIT_REVISE_ROOT="${BONUS_SPLIT_REVISE_ROOT:-}"
 
 assert_file_exists() {
   local path="$1"
@@ -255,6 +256,14 @@ docker_compose_cmd() {
     docker-compose "$@"
   fi
 }
+
+BONUS_SPLIT_REVISE_ARG=()
+if [[ -n "${BONUS_SPLIT_REVISE_ROOT}" ]]; then
+  if [[ "${BONUS_SPLIT_REVISE_ROOT}" != /* ]]; then
+    BONUS_SPLIT_REVISE_ROOT="$(cd "${PROJECT_ROOT}" && cd "${BONUS_SPLIT_REVISE_ROOT}" && pwd)"
+  fi
+  BONUS_SPLIT_REVISE_ARG=(--bonus-split-revise-root "${BONUS_SPLIT_REVISE_ROOT}")
+fi
 
 wait_mysql_ready() {
   local max_wait=120
@@ -483,7 +492,11 @@ start_step "step6_fund_etl_step2_to_step7"
 "${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step2 --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}" --max-workers 8
 "${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step3 --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}"
 "${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step4 --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}"
-"${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step5 --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}"
+if [[ ${#BONUS_SPLIT_REVISE_ARG[@]} -gt 0 ]]; then
+  "${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step5 --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}" "${BONUS_SPLIT_REVISE_ARG[@]}"
+else
+  "${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step5 --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}"
+fi
 "${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step6 --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}"
 "${PYTHON_BIN}" src/fund_etl.py --run-id "${RUN_ID}" --mode step7 --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}"
 assert_csv_has_rows "${FUND_ETL_DIR}/fund_overview.csv"
@@ -494,11 +507,18 @@ assert_dir_has_csv "${FUND_ETL_DIR}/fund_personnel_by_code"
 assert_dir_has_csv "${FUND_ETL_DIR}/fund_cum_return_by_code"
 finish_step "success"
 
+BONUS_DIR_FOR_ADJ="${FUND_ETL_DIR}/fund_bonus_by_code"
+SPLIT_DIR_FOR_ADJ="${FUND_ETL_DIR}/fund_split_by_code"
+if [[ -d "${FUND_ETL_DIR}/revised_fund_bonus_by_code" && -d "${FUND_ETL_DIR}/revised_fund_split_by_code" ]]; then
+  BONUS_DIR_FOR_ADJ="${FUND_ETL_DIR}/revised_fund_bonus_by_code"
+  SPLIT_DIR_FOR_ADJ="${FUND_ETL_DIR}/revised_fund_split_by_code"
+fi
+
 start_step "step7_adjusted_nav"
 "${PYTHON_BIN}" src/adjusted_nav_tool.py \
   --nav-dir "${FUND_ETL_DIR}/fund_nav_by_code" \
-  --bonus-dir "${FUND_ETL_DIR}/fund_bonus_by_code" \
-  --split-dir "${FUND_ETL_DIR}/fund_split_by_code" \
+  --bonus-dir "${BONUS_DIR_FOR_ADJ}" \
+  --split-dir "${SPLIT_DIR_FOR_ADJ}" \
   --output-dir "${FUND_ETL_DIR}/fund_adjusted_nav_by_code" \
   --allow-missing-event-until 2020-12-31 \
   --fail-log "${LOGS_DIR}/failed_adjusted_nav.jsonl"

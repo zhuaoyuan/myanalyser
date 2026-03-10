@@ -5,8 +5,12 @@
   cd myanalyser && source .venv312/bin/activate
   python tools/gen_scoreboard_html.py -i artifacts/filter_score_run_3/scored_result.csv -o artifacts/filter_score_run_3/scoreboard.html
 
+  带 fund_etl 目录（NAV 走势图 + 人事变动标记）：
+  python tools/gen_scoreboard_html.py -i scored_result.csv -o scoreboard.html \\
+    -f finance-runs/run_20260301_1_formal_retry_step4_rerun/data/versions/.../fund_etl
+
   或使用 result_example 测试：
-  python tools/gen_scoreboard_html.py -i result_example/composite_score_output_0301_2.csv -o result_example/scoreboard.html
+  python tools/gen_scoreboard_html.py -i result_example/composite_score_output_0301.csv -o result_example/scoreboard.html
 
 输出：单文件 HTML，内嵌数据，可直接用浏览器打开。
 """
@@ -42,89 +46,152 @@ def _pick_col(df: pd.DataFrame, *names: str) -> str | None:
     return None
 
 
-def load_and_prepare(csv_path: Path) -> tuple[list[dict], dict]:
-    """加载 CSV 并转换为图表所需的结构。返回 (rows, meta)。"""
+def _safe_code(v) -> str:
+    s = _safe_str(v, "")
+    return s.zfill(6) if s and s.isdigit() else s
+
+
+def load_and_prepare(csv_path: Path) -> tuple[list[dict], list[str], dict]:
+    """加载 CSV 并转换为图表所需的结构。返回 (rows, columns, meta)。rows 为完整列字典列表。"""
     df = pd.read_csv(csv_path, dtype={"基金代码": str}, encoding="utf-8-sig")
     df = df.fillna("")
 
-    col_yr = _pick_col(df, "年化收益率", "近1年年化收益率")
-    col_dd = _pick_col(df, "最大回撤率", "近1年最大回撤率")
-    col_scale = _pick_col(df, "规模-亿元")
-
+    columns = list(df.columns)
     rows: list[dict] = []
     for _, r in df.iterrows():
-        row = {
-            "基金代码": _safe_str(r.get("基金代码", ""), ""),
-            "基金名称": _safe_str(r.get("基金名称", ""), ""),
-            "综合得分": _safe_float(r.get("综合得分"), 0),
-            "综合排名": _safe_float(r.get("综合排名"), 0),
-            "得分_风险控制": _safe_float(r.get("得分_风险控制"), 0),
-            "得分_短期业绩": _safe_float(r.get("得分_短期业绩"), 0),
-            "得分_持有体验": _safe_float(r.get("得分_持有体验"), 0),
-            "得分_长期业绩": _safe_float(r.get("得分_长期业绩"), 0),
-            "年化收益率": _safe_float(r.get(col_yr) if col_yr else None, 0),
-            "最大回撤率": _safe_float(r.get(col_dd) if col_dd else None, 0),
-            "规模": _safe_float(r.get(col_scale) if col_scale else None, 0),
-            "基金类型": _safe_str(r.get("基金类型", ""), ""),
-        }
+        row = {}
+        for col in columns:
+            val = r.get(col)
+            if val is None or (isinstance(val, float) and pd.isna(val)):
+                row[col] = ""
+            elif isinstance(val, (int, float)) and col not in ("基金代码",):
+                row[col] = val
+            else:
+                row[col] = str(val).strip() if val is not None else ""
         rows.append(row)
 
     meta = {"total": len(rows), "source": csv_path.name}
-    return rows, meta
+    return rows, columns, meta
 
 
-def build_html(rows: list[dict], meta: dict, title: str = "基金评分看板") -> str:
+def load_fund_etl_data(
+    fund_etl_dir: Path, codes: list[str]
+) -> tuple[dict[str, list[tuple[str, float]]], dict[str, str]]:
+    """加载 fund_etl 目录下的净值和人事数据。
+    返回 (nav_by_code, personnel_latest_by_code)。
+    nav_by_code[code] = [(date, nav), ...] 按日期升序
+    personnel_latest_by_code[code] = "YYYY-MM-DD" 最近一次人事变动日期
+    """
+    nav_dir = fund_etl_dir / "fund_adjusted_nav_by_code"
+    personnel_dir = fund_etl_dir / "fund_personnel_by_code"
+
+    nav_by_code: dict[str, list[tuple[str, float]]] = {}
+    personnel_latest_by_code: dict[str, str] = {}
+
+    for code in codes:
+        safe = _safe_code(code)
+        nav_path = nav_dir / f"{safe}.csv"
+        if nav_path.exists():
+            try:
+                ndf = pd.read_csv(nav_path, dtype={"基金代码": str}, encoding="utf-8-sig")
+                if "净值日期" in ndf.columns and "复权净值" in ndf.columns:
+                    ndf = ndf.dropna(subset=["净值日期", "复权净值"])
+                    ndf["净值日期"] = pd.to_datetime(ndf["净值日期"], errors="coerce").dt.strftime("%Y-%m-%d")
+                    ndf = ndf.sort_values("净值日期")
+                    nav_by_code[safe] = list(zip(ndf["净值日期"].tolist(), ndf["复权净值"].astype(float).tolist()))
+            except Exception:
+                pass
+
+        per_path = personnel_dir / f"{safe}.csv"
+        if per_path.exists():
+            try:
+                pdf = pd.read_csv(per_path, dtype={"基金代码": str}, encoding="utf-8-sig")
+                if "公告日期" in pdf.columns and not pdf.empty:
+                    pdf["公告日期"] = pd.to_datetime(pdf["公告日期"], errors="coerce")
+                    latest = pdf["公告日期"].dropna().max()
+                    if pd.notna(latest):
+                        personnel_latest_by_code[safe] = latest.strftime("%Y-%m-%d")
+            except Exception:
+                pass
+
+    return nav_by_code, personnel_latest_by_code
+
+
+def build_html(
+    rows: list[dict],
+    columns: list[str],
+    meta: dict,
+    title: str = "基金评分看板",
+    nav_by_code: dict | None = None,
+    personnel_latest_by_code: dict | None = None,
+) -> str:
     """构建完整 HTML 内容。"""
+    col_yr1 = _pick_col(
+        pd.DataFrame(rows) if rows else pd.DataFrame(),
+        "近1年年化收益率",
+        "年化收益率",
+    )
+    col_dd1 = _pick_col(
+        pd.DataFrame(rows) if rows else pd.DataFrame(),
+        "近1年最大回撤率",
+        "最大回撤率",
+    )
+    col_scale = _pick_col(
+        pd.DataFrame(rows) if rows else pd.DataFrame(),
+        "规模-亿元",
+    )
+
     data_json = json.dumps(rows, ensure_ascii=False)
     meta_json = json.dumps(meta, ensure_ascii=False)
 
     # 综合排名条形图：Top 25
     top_n = 25
-    sorted_rows = sorted(rows, key=lambda x: x["综合得分"], reverse=True)[:top_n]
-    rank_names = [f"{r['基金名称']}({r['基金代码']})" for r in sorted_rows]
-    rank_scores = [round(r["综合得分"], 4) for r in sorted_rows]
+    sorted_rows = sorted(
+        rows,
+        key=lambda x: _safe_float(x.get("综合得分"), 0),
+        reverse=True,
+    )[:top_n]
+    rank_names = [f"{r.get('基金名称','')}({r.get('基金代码','')})" for r in sorted_rows]
+    rank_scores = [round(_safe_float(r.get("综合得分"), 0), 4) for r in sorted_rows]
 
-    # 风险-收益散点：年化收益 vs 最大回撤，气泡大小反映规模（亿）
-    scatter_data = [
-        {
-            "name": f"{r['基金名称']}({r['基金代码']})",
-            "value": [r["最大回撤率"], r["年化收益率"], r["规模"], r["基金类型"]],
-            "symbolSize": min(35, max(6, 6 + (r["规模"] or 0) * 0.4)),
-        }
-        for r in rows
-    ]
+    # 风险-收益散点：近1年最大回撤(X) vs 近1年年化收益率(Y)，气泡大小反映规模
+    yr_vals = [r.get(col_yr1) for r in rows] if col_yr1 else []
+    dd_vals = [r.get(col_dd1) for r in rows] if col_dd1 else []
+    scale_vals = [r.get(col_scale) for r in rows] if col_scale else []
+    scatter_data = []
+    for i, r in enumerate(rows):
+        dd = _safe_float(dd_vals[i] if i < len(dd_vals) else None, 0)
+        yr = _safe_float(yr_vals[i] if i < len(yr_vals) else None, 0)
+        scale = _safe_float(scale_vals[i] if i < len(scale_vals) else None, 0)
+        scatter_data.append(
+            {
+                "name": f"{r.get('基金名称','')}({r.get('基金代码','')})",
+                "value": [dd, yr, scale, r.get("基金类型", "")],
+                "symbolSize": min(35, max(6, 6 + (scale or 0) * 0.4)),
+            }
+        )
 
-    # 得分分布
-    composite_scores = [r["综合得分"] for r in rows if r["综合得分"] is not None]
-    score_hist_edges = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-    score_hist = [0] * (len(score_hist_edges))
-    for s in composite_scores:
-        for i, e in enumerate(score_hist_edges):
-            if s <= e:
-                score_hist[i] += 1
-                break
-        else:
-            score_hist[-1] += 1
-
-    # 雷达图维度名
+    # 雷达图（需有四维得分）
     radar_indicator = [
         {"name": "风险控制", "max": 1},
         {"name": "短期业绩", "max": 1},
         {"name": "持有体验", "max": 1},
         {"name": "长期业绩", "max": 1},
     ]
-
-    # 默认雷达图：选综合得分最高的一只
-    if rows:
-        best = max(rows, key=lambda x: x["综合得分"])
+    has_radar = all(
+        k in (rows[0] if rows else {})
+        for k in ("得分_风险控制", "得分_短期业绩", "得分_持有体验", "得分_长期业绩")
+    )
+    if rows and has_radar:
+        best = max(rows, key=lambda x: _safe_float(x.get("综合得分"), 0))
         radar_series = [
             {
-                "name": f"{best['基金名称']}({best['基金代码']})",
+                "name": f"{best.get('基金名称','')}({best.get('基金代码','')})",
                 "value": [
-                    best["得分_风险控制"],
-                    best["得分_短期业绩"],
-                    best["得分_持有体验"],
-                    best["得分_长期业绩"],
+                    _safe_float(best.get("得分_风险控制"), 0),
+                    _safe_float(best.get("得分_短期业绩"), 0),
+                    _safe_float(best.get("得分_持有体验"), 0),
+                    _safe_float(best.get("得分_长期业绩"), 0),
                 ],
             }
         ]
@@ -133,11 +200,42 @@ def build_html(rows: list[dict], meta: dict, title: str = "基金评分看板") 
 
     rank_bar_json = json.dumps({"names": rank_names, "scores": rank_scores}, ensure_ascii=False)
     scatter_json = json.dumps(scatter_data, ensure_ascii=False)
-    score_hist_json = json.dumps(
-        {"edges": score_hist_edges, "counts": score_hist}, ensure_ascii=False
-    )
     radar_indicator_json = json.dumps(radar_indicator, ensure_ascii=False)
     radar_series_json = json.dumps(radar_series, ensure_ascii=False)
+    columns_json = json.dumps(columns, ensure_ascii=False)
+
+    has_nav = bool(nav_by_code)
+    nav_json = json.dumps(nav_by_code or {}, ensure_ascii=False)
+    personnel_json = json.dumps(personnel_latest_by_code or {}, ensure_ascii=False)
+
+    # NAV 图表区域（仅当有 fund_etl 数据时显示）
+    nav_section = ""
+    if has_nav:
+        nav_section = f"""
+  <div class="card" style="margin-top:16px;">
+    <h2>④ 基金复权净值走势图</h2>
+    <div class="controls">
+      <label>时间范围:</label>
+      <select id="navTimeRange">
+        <option value="1">近1年</option>
+        <option value="3">近3年</option>
+      </select>
+      <label>排序规则:</label>
+      <select id="navSortRule">
+        <option value="综合得分">综合得分</option>
+        <option value="得分_风险控制">风险控制</option>
+        <option value="得分_短期业绩">短期业绩</option>
+        <option value="得分_持有体验">持有体验</option>
+        <option value="得分_长期业绩">长期业绩</option>
+      </select>
+      <button type="button" id="navApplyTop10">应用该规则 Top10</button>
+      <label style="margin-left:12px;"><input type="checkbox" id="navShowPersonnel"> 显示最近人事变动</label>
+      <button type="button" id="navFundSelectAll">全选</button>
+      <button type="button" id="navFundSelectNone">全不选</button>
+    </div>
+    <div class="nav-fund-picker" id="navFundPicker"></div>
+    <div id="chartNav" class="chart chart-tall" style="height:450px;"></div>
+  </div>"""
 
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -159,11 +257,20 @@ def build_html(rows: list[dict], meta: dict, title: str = "基金评分看板") 
     .chart-tall {{ height: 400px; }}
     table {{ width: 100%; border-collapse: collapse; font-size: 0.8rem; }}
     th, td {{ padding: 8px 10px; text-align: left; border-bottom: 1px solid #eee; }}
-    th {{ background: #f8f9fa; color: #555; font-weight: 600; }}
+    th {{ background: #f8f9fa; color: #555; font-weight: 600; cursor: pointer; user-select: none; }}
+    th:hover {{ background: #eef1f5; }}
+    th.sort-asc::after {{ content: ' ▲'; font-size: 0.7em; }}
+    th.sort-desc::after {{ content: ' ▼'; font-size: 0.7em; }}
     tr:hover {{ background: #f8fafc; }}
     .num {{ text-align: right; font-variant-numeric: tabular-nums; }}
     select {{ padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; margin-right: 8px; font-size: 0.9rem; }}
     .controls {{ margin-bottom: 12px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }}
+    .col-filter {{ width: 100%; max-width: 80px; padding: 2px 4px; font-size: 0.75rem; border: 1px solid #ddd; }}
+    .nav-fund-picker {{ max-height: 220px; overflow-y: auto; border: 1px solid #eee; padding: 8px; margin-bottom: 8px; font-size: 0.8rem; display: flex; flex-wrap: wrap; gap: 6px; }}
+    .nav-fund-picker label {{ display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; cursor: pointer; }}
+    button {{ padding: 6px 12px; border: 1px solid #ddd; border-radius: 4px; background: #f8f9fa; cursor: pointer; }}
+    button:hover {{ background: #e9ecef; }}
+    #colVisibility {{ margin-left: 8px; font-size: 0.85rem; }}
   </style>
 </head>
 <body>
@@ -185,29 +292,20 @@ def build_html(rows: list[dict], meta: dict, title: str = "基金评分看板") 
     </div>
   </div>
 
-  <div class="grid">
-    <div class="card">
-      <h2>③ 风险-收益散点图</h2>
-      <p style="font-size:0.8rem;color:#666;margin:0 0 8px 0;">横轴: 最大回撤率(%)，纵轴: 年化收益率(%)，气泡大小≈规模</p>
-      <div id="chartScatter" class="chart chart-tall"></div>
-    </div>
-    <div class="card">
-      <h2>④ 综合得分分布</h2>
-      <div id="chartHist" class="chart"></div>
-    </div>
+  <div class="card" style="margin-bottom:16px;">
+    <h2>③ 风险-收益散点图</h2>
+    <p style="font-size:0.8rem;color:#666;margin:0 0 8px 0;">横轴: 近1年最大回撤率(%)，纵轴: 近1年年化收益率(%)，气泡大小≈规模</p>
+    <div id="chartScatter" class="chart chart-tall"></div>
   </div>
+{nav_section}
 
   <div class="card" style="margin-top:16px;">
     <h2>⑤ 明细表</h2>
     <div class="controls">
-      <label>显示:</label>
-      <select id="tableTopN">
-        <option value="20">Top 20</option>
-        <option value="50">Top 50</option>
-        <option value="999">全部</option>
-      </select>
+      <label id="colVisibility"><input type="checkbox" id="colVisToggle" checked> 勾选显示列（默认全选）</label>
+      <span id="colCheckboxes"></span>
     </div>
-    <div style="overflow-x:auto; max-height:400px; overflow-y:auto;">
+    <div style="overflow-x:auto; max-height:450px; overflow-y:auto;">
       <table id="dataTable">
         <thead><tr id="tableHead"></tr></thead>
         <tbody id="tableBody"></tbody>
@@ -217,11 +315,25 @@ def build_html(rows: list[dict], meta: dict, title: str = "基金评分看板") 
 
   <script>
     const RAW_DATA = {data_json};
+    const COLUMNS = {columns_json};
     const RANK_BAR = {rank_bar_json};
     const SCATTER_DATA = {scatter_json};
-    const SCORE_HIST = {score_hist_json};
     const RADAR_INDICATOR = {radar_indicator_json};
     const RADAR_INIT = {radar_series_json};
+    const NAV_BY_CODE = {nav_json};
+    const PERSONNEL_LATEST = {personnel_json};
+    const HAS_NAV = {str(has_nav).lower()};
+
+    let tableSortCol = null;
+    let tableSortAsc = true;
+    let colVisible = {{}};
+    COLUMNS.forEach(c => {{ colVisible[c] = true; }});
+
+    function isNumericCol(v) {{
+      if (v === null || v === undefined || v === '') return false;
+      const n = Number(v);
+      return !isNaN(n) && v !== true && v !== false;
+    }}
 
     function renderRankBar() {{
       const chart = echarts.init(document.getElementById('chartRank'));
@@ -245,8 +357,12 @@ def build_html(rows: list[dict], meta: dict, title: str = "基金评分看板") 
 
     function renderRadar() {{
       const sel = document.getElementById('radarSelect');
+      if (!RAW_DATA[0]?.得分_风险控制) {{
+        document.getElementById('chartRadar').parentElement.innerHTML = '<p style="color:#999;">无四维得分数据</p>';
+        return;
+      }}
       sel.innerHTML = RAW_DATA.map((r, i) =>
-        `<option value="${{i}}">${{r.基金名称}} (${{r.基金代码}})</option>`
+        `<option value="${{i}}">${{r.基金名称 || ''}} (${{r.基金代码 || ''}})</option>`
       ).join('');
       sel.onchange = () => {{
         const idx = parseInt(sel.value, 10);
@@ -254,8 +370,8 @@ def build_html(rows: list[dict], meta: dict, title: str = "基金评分看板") 
         radarChart.setOption({{
           series: [{{
             data: [{{
-              name: r.基金名称 + '(' + r.基金代码 + ')',
-              value: [r.得分_风险控制, r.得分_短期业绩, r.得分_持有体验, r.得分_长期业绩]
+              name: (r.基金名称 || '') + '(' + (r.基金代码 || '') + ')',
+              value: [r.得分_风险控制||0, r.得分_短期业绩||0, r.得分_持有体验||0, r.得分_长期业绩||0]
             }}]
           }}]
         }});
@@ -275,12 +391,12 @@ def build_html(rows: list[dict], meta: dict, title: str = "基金评分看板") 
         tooltip: {{
           formatter: function(p) {{
             const v = p.data.value;
-            return `${{p.data.name}}<br/>最大回撤: ${{v[0].toFixed(2)}}%<br/>年化收益: ${{v[1].toFixed(2)}}%<br/>规模: ${{v[2].toFixed(2)}}亿<br/>类型: ${{v[3]}}`;
+            return `${{p.data.name}}<br/>近1年最大回撤: ${{v[0].toFixed(2)}}%<br/>近1年年化收益: ${{v[1].toFixed(2)}}%<br/>规模: ${{v[2].toFixed(2)}}亿<br/>类型: ${{v[3]}}`;
           }}
         }},
         grid: {{ left: 50, right: 30, top: 30, bottom: 40 }},
-        xAxis: {{ name: '最大回撤率(%)', type: 'value', nameLocation: 'middle', nameGap: 25 }},
-        yAxis: {{ name: '年化收益率(%)', type: 'value', nameLocation: 'middle', nameGap: 40 }},
+        xAxis: {{ name: '近1年最大回撤率(%)', type: 'value', nameLocation: 'middle', nameGap: 25 }},
+        yAxis: {{ name: '近1年年化收益率(%)', type: 'value', nameLocation: 'middle', nameGap: 40 }},
         series: [{{
           type: 'scatter',
           data: SCATTER_DATA,
@@ -291,61 +407,209 @@ def build_html(rows: list[dict], meta: dict, title: str = "基金评分看板") 
       }});
     }}
 
-    function renderHist() {{
-      const chart = echarts.init(document.getElementById('chartHist'));
-      const labels = SCORE_HIST.edges.map((e, i) =>
-        i === 0 ? '≤' + e : (SCORE_HIST.edges[i-1] + '-' + e)
-      );
-      chart.setOption({{
-        tooltip: {{ trigger: 'axis' }},
-        grid: {{ left: 50, right: 30, top: 30, bottom: 50 }},
-        xAxis: {{ type: 'category', data: labels, axisLabel: {{ rotate: 20 }} }},
-        yAxis: {{ type: 'value', name: '数量' }},
-        series: [{{ type: 'bar', data: SCORE_HIST.counts, itemStyle: {{ color: '#5470c6' }} }}]
+    function renderNavChart() {{
+      if (!HAS_NAV) return;
+      const timeYears = parseInt(document.getElementById('navTimeRange')?.value || 1, 10);
+      const showPersonnel = document.getElementById('navShowPersonnel')?.checked || false;
+      const checkedCodes = Array.from(document.querySelectorAll('#navFundPicker input:checked')).map(e => e.value);
+
+      const endDate = new Date();
+      const startDate = new Date();
+      startDate.setFullYear(startDate.getFullYear() - timeYears);
+      const startStr = startDate.toISOString().slice(0, 10);
+      const endStr = endDate.toISOString().slice(0, 10);
+
+      const series = [];
+      const colorPalette = ['#5470c6','#91cc75','#fac858','#ee6666','#73c0de','#3ba272','#fc8452','#9a60b4','#ea7ccc'];
+      checkedCodes.forEach((code, i) => {{
+        const points = NAV_BY_CODE[code] || [];
+        const filtered = points.filter(p => p[0] >= startStr && p[0] <= endStr);
+        if (filtered.length === 0) return;
+        const base = filtered[0][1];
+        const data = filtered.map(p => [p[0], base > 0 ? ((p[1] / base - 1) * 100).toFixed(2) : 0]);
+        const r = RAW_DATA.find(x => (x.基金代码||'').toString().padStart(6,'0') === (code+'').padStart(6,'0'));
+        const name = r ? (r.基金名称 || '') + '(' + (r.基金代码 || '') + ')' : code;
+        series.push({{ name, type: 'line', data, smooth: true, symbol: 'circle', symbolSize: 4, lineStyle: {{ width: 2 }}, itemStyle: {{ color: colorPalette[i % colorPalette.length] }} }});
       }});
+
+      const marks = [];
+      if (showPersonnel && series.length > 0) {{
+        checkedCodes.forEach(code => {{
+          const d = PERSONNEL_LATEST[code];
+          if (d && d >= startStr && d <= endStr) {{
+            const r = RAW_DATA.find(x => (x.基金代码||'').toString().padStart(6,'0') === (code+'').padStart(6,'0'));
+            const name = r ? (r.基金名称 || '') + '(' + code + ')' : code;
+            marks.push({{ xAxis: d, lineStyle: {{ type: 'dashed', color: '#999' }}, label: {{ formatter: '人事:' + d, position: 'insideStartTop' }} }});
+          }}
+        }});
+      }}
+
+      const opt = {{
+        tooltip: {{ trigger: 'axis' }},
+        legend: {{ type: 'scroll', bottom: 5, data: series.map(s => s.name) }},
+        grid: {{ left: 50, right: 30, top: 40, bottom: 80 }},
+        xAxis: {{ type: 'time', boundaryGap: false }},
+        yAxis: {{ name: '累计涨跌幅(%)', type: 'value', axisLabel: {{ formatter: '{{value}}%' }} }},
+        series
+      }};
+      if (marks.length > 0) opt.markLine = {{ data: marks, symbol: ['none','none'] }};
+
+      const chart = echarts.getInstanceByDom(document.getElementById('chartNav')) || echarts.init(document.getElementById('chartNav'));
+      chart.setOption(opt, true);
+    }}
+
+    function buildNavFundPicker() {{
+      if (!HAS_NAV) return;
+      const pad = c => (c+'').padStart(6,'0');
+      const sorted = [...RAW_DATA].sort((a,b) => (b.综合得分||0) - (a.综合得分||0));
+      const navCodes = Object.keys(NAV_BY_CODE);
+      const top10Padded = new Set(sorted.slice(0,10).map(r => pad((r.基金代码||'')+'')));
+
+      const container = document.getElementById('navFundPicker');
+      container.innerHTML = navCodes.map(code => {{
+        const r = RAW_DATA.find(x => pad((x.基金代码||'')+'') === pad(code));
+        const label = r ? (r.基金名称||'') + '(' + (r.基金代码||'') + ')' : code;
+        const checked = top10Padded.has(pad(code)) ? 'checked' : '';
+        return `<label><input type="checkbox" value="${{code}}" ${{checked}}>${{label}}</label>`;
+      }}).join('');
+
+      container.querySelectorAll('input').forEach(cb => cb.addEventListener('change', renderNavChart));
+    }}
+
+    function applyNavTop10() {{
+      if (!HAS_NAV) return;
+      const rule = document.getElementById('navSortRule')?.value || '综合得分';
+      const sorted = [...RAW_DATA].sort((a,b) => (b[rule]||0) - (a[rule]||0));
+      const top10Codes = sorted.slice(0,10).map(r => (r.基金代码||'').toString().replace(/^0+/, '') || '0');
+      document.querySelectorAll('#navFundPicker input').forEach(cb => {{
+        const c = (cb.value+'').replace(/^0+/, '') || '0';
+        cb.checked = top10Codes.some(t => (t+'').padStart(6,'0') === (c+'').padStart(6,'0'));
+      }});
+      renderNavChart();
     }}
 
     function renderTable() {{
-      const headers = ['排名','代码','名称','综合得分','风险控制','短期业绩','持有体验','长期业绩','年化%','回撤%','规模亿','类型'];
       const thead = document.getElementById('tableHead');
-      thead.innerHTML = headers.map((h,i) => i <= 2 ? '<th>' + h + '</th>' : '<th class="num">' + h + '</th>').join('');
-      const topN = parseInt(document.getElementById('tableTopN').value, 10);
-      const sorted = [...RAW_DATA].sort((a,b) => (b.综合得分 || 0) - (a.综合得分 || 0)).slice(0, topN);
-      const fmt = (v, d) => (v != null && v !== '') ? Number(v).toFixed(d) : '-';
       const tbody = document.getElementById('tableBody');
-      tbody.innerHTML = sorted.map(r => {{
-        const cells = [
-          Math.round(r.综合排名),
-          r.基金代码,
-          r.基金名称,
-          fmt(r.综合得分, 4),
-          fmt(r.得分_风险控制, 3),
-          fmt(r.得分_短期业绩, 3),
-          fmt(r.得分_持有体验, 3),
-          fmt(r.得分_长期业绩, 3),
-          fmt(r.年化收益率, 2),
-          fmt(r.最大回撤率, 2),
-          fmt(r.规模, 2),
-          r.基金类型 || '-'
-        ];
-        return '<tr><td class="num">' + cells[0] + '</td><td>' + cells[1] + '</td><td>' + cells[2] + '</td>' +
-          cells.slice(3).map(c => '<td class="num">' + c + '</td>').join('') + '</tr>';
+      const visibleCols = COLUMNS.filter(c => colVisible[c]);
+
+      thead.innerHTML = visibleCols.map(col => {{
+        const cls = (tableSortCol === col ? (tableSortAsc ? 'sort-asc' : 'sort-desc') : '') + (isNumericCol(RAW_DATA[0]?.[col]) ? ' num' : '');
+        return `<th class="${{cls}}" data-col="${{col}}">${{col}}<br><input type="text" class="col-filter" placeholder="筛选" data-col="${{col}}">`;
       }}).join('');
+
+      let sorted = [...RAW_DATA];
+      if (tableSortCol && visibleCols.includes(tableSortCol)) {{
+        const getVal = r => {{
+          const v = r[tableSortCol];
+          if (isNumericCol(v)) return Number(v);
+          return (v ?? '').toString();
+        }};
+        sorted.sort((a,b) => {{
+          const va = getVal(a), vb = getVal(b);
+          const cmp = (typeof va === 'number' && typeof vb === 'number') ? va - vb : String(va).localeCompare(String(vb));
+          return tableSortAsc ? cmp : -cmp;
+        }});
+      }}
+
+      const filters = {{}};
+      visibleCols.forEach(c => {{
+        const inp = thead.querySelector(`input[data-col="${{c}}"]`);
+        if (inp) filters[c] = (inp.value || '').toLowerCase().trim();
+      }});
+
+      sorted = sorted.filter(row => {{
+        return visibleCols.every(col => {{
+          const f = filters[col];
+          if (!f) return true;
+          const v = (row[col] ?? '').toString().toLowerCase();
+          return v.includes(f);
+        }});
+      }});
+
+      const fmt = (v, col) => {{
+        if (v == null || v === '') return '-';
+        if (isNumericCol(v)) {{
+          const n = Number(v);
+          if (Number.isInteger(n)) return String(n);
+          return n.toFixed(Math.abs(n) >= 100 ? 0 : Math.abs(n) >= 1 ? 2 : 4);
+        }}
+        return String(v);
+      }};
+
+      tbody.innerHTML = sorted.map(row => {{
+        return '<tr>' + visibleCols.map(col => {{
+          const v = row[col];
+          const isNum = isNumericCol(v);
+          return `<td class="${{isNum ? 'num' : ''}}">${{fmt(v, col)}}</td>`;
+        }}).join('') + '</tr>';
+      }}).join('');
+
+      thead.querySelectorAll('th[data-col]').forEach(th => {{
+        th.onclick = () => {{
+          const col = th.dataset.col;
+          if (tableSortCol === col) tableSortAsc = !tableSortAsc;
+          else {{ tableSortCol = col; tableSortAsc = true; }}
+          renderTable();
+        }};
+      }});
+      thead.querySelectorAll('.col-filter').forEach(inp => {{
+        inp.oninput = inp.onchange = () => renderTable();
+      }});
     }}
 
-    document.getElementById('tableTopN').onchange = renderTable;
+    function renderColCheckboxes() {{
+      const container = document.getElementById('colCheckboxes');
+      const toggle = document.getElementById('colVisToggle');
+      container.innerHTML = COLUMNS.map(c => {{
+        const id = 'col_' + c.replace(/[^a-zA-Z0-9_]/g, '_');
+        return `<label style="margin-right:8px"><input type="checkbox" id="${{id}}" ${{colVisible[c]?'checked':''}} data-col="${{c}}">${{c}}</label>`;
+      }}).join('');
+      container.querySelectorAll('input').forEach(cb => {{
+        cb.addEventListener('change', () => {{
+          colVisible[cb.dataset.col] = cb.checked;
+          if (toggle) toggle.checked = Object.values(colVisible).every(v => v);
+          renderTable();
+        }});
+      }});
+      if (toggle) {{
+        toggle.onclick = () => {{
+          const next = toggle.checked;
+          COLUMNS.forEach(c => {{ colVisible[c] = next; }});
+          container.querySelectorAll('input').forEach(cb => {{ cb.checked = next; }});
+          renderTable();
+        }};
+      }}
+    }}
 
-    renderRankBar();
-    renderRadar();
-    renderScatter();
-    renderHist();
-    renderTable();
+    document.addEventListener('DOMContentLoaded', () => {{
+      renderRankBar();
+      renderRadar();
+      renderScatter();
+      renderColCheckboxes();
+      renderTable();
+      if (HAS_NAV) {{
+        buildNavFundPicker();
+        renderNavChart();
+        document.getElementById('navTimeRange')?.addEventListener('change', renderNavChart);
+        document.getElementById('navShowPersonnel')?.addEventListener('change', renderNavChart);
+        document.getElementById('navApplyTop10')?.addEventListener('click', applyNavTop10);
+        document.getElementById('navFundSelectAll')?.addEventListener('click', () => {{
+          document.querySelectorAll('#navFundPicker input').forEach(cb => {{ cb.checked = true; }});
+          renderNavChart();
+        }});
+        document.getElementById('navFundSelectNone')?.addEventListener('click', () => {{
+          document.querySelectorAll('#navFundPicker input').forEach(cb => {{ cb.checked = false; }});
+          renderNavChart();
+        }});
+      }}
+    }});
 
     window.addEventListener('resize', () => {{
       echarts.getInstanceByDom(document.getElementById('chartRank'))?.resize();
       echarts.getInstanceByDom(document.getElementById('chartRadar'))?.resize();
       echarts.getInstanceByDom(document.getElementById('chartScatter'))?.resize();
-      echarts.getInstanceByDom(document.getElementById('chartHist'))?.resize();
+      if (HAS_NAV) echarts.getInstanceByDom(document.getElementById('chartNav'))?.resize();
     }});
   </script>
 </body>
@@ -372,6 +636,13 @@ def main() -> int:
         help="输出 HTML 路径（默认：与输入同目录下的 scoreboard.html）",
     )
     parser.add_argument(
+        "-f",
+        "--fund-etl",
+        type=Path,
+        default=None,
+        help="fund_etl 目录（含 fund_adjusted_nav_by_code、fund_personnel_by_code），传入后显示净值走势图",
+    )
+    parser.add_argument(
         "-t",
         "--title",
         default="基金评分看板",
@@ -386,11 +657,33 @@ def main() -> int:
     out_path = args.output or args.input.parent / "scoreboard.html"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    rows, meta = load_and_prepare(args.input)
+    rows, columns, meta = load_and_prepare(args.input)
     if not rows:
         print("警告：无数据行，将生成空图表", flush=True)
 
-    html = build_html(rows, meta, args.title)
+    nav_by_code: dict | None = None
+    personnel_latest_by_code: dict | None = None
+    if args.fund_etl and args.fund_etl.exists():
+        codes = [
+            _safe_code(r.get("基金代码", ""))
+            for r in rows
+            if r.get("基金代码")
+        ]
+        codes = [c for c in codes if c]
+        nav_by_code, personnel_latest_by_code = load_fund_etl_data(
+            args.fund_etl, codes
+        )
+        nav_count = len(nav_by_code)
+        print(f"已加载 fund_etl: {nav_count}/{len(set(codes))} 只基金有净值数据", flush=True)
+
+    html = build_html(
+        rows,
+        columns,
+        meta,
+        args.title,
+        nav_by_code=nav_by_code,
+        personnel_latest_by_code=personnel_latest_by_code,
+    )
     out_path.write_text(html, encoding="utf-8")
     print(f"已生成: {out_path}", flush=True)
     return 0

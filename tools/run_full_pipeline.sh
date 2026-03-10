@@ -44,6 +44,7 @@
 #    INTEGRITY_END_DATE     交易日完整性校验结束日（默认：当天）
 #    FILTER_START_DATE      收益比较过滤起始日（默认：2023-01-01）
 #    FILTER_MAX_ABS_DEVIATION  收益偏差过滤阈值（默认：0.02）
+#    BONUS_SPLIT_REVISE_ROOT  分红/拆分投票历史修订 fund_etl 目录（为空则跳过投票）
 #    DB_INFRA_DIR           fund_db_infra 目录（默认：自动向上查找）
 #    TRADE_DATES_CSV        交易日历 CSV 路径（默认：自动查找）
 #    FUND_BLACKLIST_PATH    基金黑名单 CSV（默认：myanalyser/data/common/fund_blacklist.csv）
@@ -234,6 +235,7 @@ export RUN_ID DATA_VERSION
 export DB_INFRA_DIR TRADE_DATES_CSV
 export ETL_MAX_RETRIES ETL_RETRY_SLEEP ETL_MAX_WORKERS ETL_PROGRESS_INTERVAL
 export STALE_MAX_DAYS INTEGRITY_START_DATE INTEGRITY_END_DATE FILTER_START_DATE FILTER_MAX_ABS_DEVIATION
+export BONUS_SPLIT_REVISE_ROOT
 
 if [[ ! -f "${RUN_ENV_FILE}" ]]; then
   mkdir -p "${VERIFY_ROOT}"
@@ -522,6 +524,14 @@ if [[ -n "${LOCAL_PURCHASE_CSV}" ]]; then
   echo "[full-run] local purchase csv mode enabled: ${LOCAL_PURCHASE_CSV}"
 fi
 
+BONUS_SPLIT_REVISE_ARG=()
+if [[ -n "${BONUS_SPLIT_REVISE_ROOT:-}" ]]; then
+  if [[ "${BONUS_SPLIT_REVISE_ROOT}" != /* ]]; then
+    BONUS_SPLIT_REVISE_ROOT="$(cd "${PROJECT_ROOT}" && cd "${BONUS_SPLIT_REVISE_ROOT}" && pwd)"
+  fi
+  BONUS_SPLIT_REVISE_ARG=(--bonus-split-revise-root "${BONUS_SPLIT_REVISE_ROOT}")
+fi
+
 start_step "step1_start_db"
 assert_file_exists "${DB_INFRA_DIR}/docker-compose.yml"
 docker_compose_cmd -f "${DB_INFRA_DIR}/docker-compose.yml" up -d
@@ -583,14 +593,26 @@ else
       --max-workers "${ETL_MAX_WORKERS}" \
       --progress-interval "${ETL_PROGRESS_INTERVAL}"
     for mode in step2 step3 step4 step5 step6 step7; do
-      "${PYTHON_BIN}" src/fund_etl.py \
-        --run-id "${RUN_ID}" \
-        --mode "${mode}" \
-        --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}" \
-        --max-retries "${ETL_MAX_RETRIES}" \
-        --retry-sleep "${ETL_RETRY_SLEEP}" \
-        --max-workers "${ETL_MAX_WORKERS}" \
-        --progress-interval "${ETL_PROGRESS_INTERVAL}"
+      if [[ ${#BONUS_SPLIT_REVISE_ARG[@]} -gt 0 ]]; then
+        "${PYTHON_BIN}" src/fund_etl.py \
+          --run-id "${RUN_ID}" \
+          --mode "${mode}" \
+          --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}" \
+          --max-retries "${ETL_MAX_RETRIES}" \
+          --retry-sleep "${ETL_RETRY_SLEEP}" \
+          --max-workers "${ETL_MAX_WORKERS}" \
+          --progress-interval "${ETL_PROGRESS_INTERVAL}" \
+          "${BONUS_SPLIT_REVISE_ARG[@]}"
+      else
+        "${PYTHON_BIN}" src/fund_etl.py \
+          --run-id "${RUN_ID}" \
+          --mode "${mode}" \
+          --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}" \
+          --max-retries "${ETL_MAX_RETRIES}" \
+          --retry-sleep "${ETL_RETRY_SLEEP}" \
+          --max-workers "${ETL_MAX_WORKERS}" \
+          --progress-interval "${ETL_PROGRESS_INTERVAL}"
+      fi
     done
   else
     echo "[full-run] step 2/7: fund_etl verify + step2~step7 (using fund_purchase_effective)"
@@ -603,14 +625,26 @@ else
       --max-workers "${ETL_MAX_WORKERS}" \
       --progress-interval "${ETL_PROGRESS_INTERVAL}"
     for mode in step2 step3 step4 step5 step6 step7; do
-      "${PYTHON_BIN}" src/fund_etl.py \
-        --run-id "${RUN_ID}" \
-        --mode "${mode}" \
-        --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}" \
-        --max-retries "${ETL_MAX_RETRIES}" \
-        --retry-sleep "${ETL_RETRY_SLEEP}" \
-        --max-workers "${ETL_MAX_WORKERS}" \
-        --progress-interval "${ETL_PROGRESS_INTERVAL}"
+      if [[ ${#BONUS_SPLIT_REVISE_ARG[@]} -gt 0 ]]; then
+        "${PYTHON_BIN}" src/fund_etl.py \
+          --run-id "${RUN_ID}" \
+          --mode "${mode}" \
+          --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}" \
+          --max-retries "${ETL_MAX_RETRIES}" \
+          --retry-sleep "${ETL_RETRY_SLEEP}" \
+          --max-workers "${ETL_MAX_WORKERS}" \
+          --progress-interval "${ETL_PROGRESS_INTERVAL}" \
+          "${BONUS_SPLIT_REVISE_ARG[@]}"
+      else
+        "${PYTHON_BIN}" src/fund_etl.py \
+          --run-id "${RUN_ID}" \
+          --mode "${mode}" \
+          --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}" \
+          --max-retries "${ETL_MAX_RETRIES}" \
+          --retry-sleep "${ETL_RETRY_SLEEP}" \
+          --max-workers "${ETL_MAX_WORKERS}" \
+          --progress-interval "${ETL_PROGRESS_INTERVAL}"
+      fi
     done
   fi
   assert_csv_has_rows "${FUND_ETL_DIR}/fund_purchase.csv"
@@ -624,6 +658,13 @@ else
 fi
 finish_step "success"
 
+BONUS_DIR_FOR_ADJ="${FUND_ETL_DIR}/fund_bonus_by_code"
+SPLIT_DIR_FOR_ADJ="${FUND_ETL_DIR}/fund_split_by_code"
+if [[ -d "${FUND_ETL_DIR}/revised_fund_bonus_by_code" && -d "${FUND_ETL_DIR}/revised_fund_split_by_code" ]]; then
+  BONUS_DIR_FOR_ADJ="${FUND_ETL_DIR}/revised_fund_bonus_by_code"
+  SPLIT_DIR_FOR_ADJ="${FUND_ETL_DIR}/revised_fund_split_by_code"
+fi
+
 start_step "step3_adjusted_nav"
 if has_checkpoint "step3_adjusted_nav"; then
   echo "[full-run] step 3/7: checkpoint hit, skip adjusted nav"
@@ -632,8 +673,8 @@ else
   echo "[full-run] step 3/7: calculate adjusted nav"
   "${PYTHON_BIN}" src/adjusted_nav_tool.py \
     --nav-dir "${FUND_ETL_DIR}/fund_nav_by_code" \
-    --bonus-dir "${FUND_ETL_DIR}/fund_bonus_by_code" \
-    --split-dir "${FUND_ETL_DIR}/fund_split_by_code" \
+    --bonus-dir "${BONUS_DIR_FOR_ADJ}" \
+    --split-dir "${SPLIT_DIR_FOR_ADJ}" \
     --output-dir "${FUND_ETL_DIR}/fund_adjusted_nav_by_code" \
     --allow-missing-event-until 2020-12-31 \
     --fail-log "${LOGS_DIR}/failed_adjusted_nav.jsonl"

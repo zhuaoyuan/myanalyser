@@ -69,6 +69,18 @@ export FUND_BACKTEST_MAX_FUNDS=50
 python myanalyser/tools/pybroker_fund_backtest.py --nav-dir finance-runs/run_xxx/data ...
 ```
 
+### PyBroker 回测输出文件
+
+| 文件 | 说明 |
+|------|------|
+| summary.csv | 汇总：运行参数、数据范围、fund_metrics_core 指标（年化、回撤、夏普等） |
+| period_detail.csv | 每期调仓明细（含 period_return、换手、订单） |
+| equity_curve.csv | 每日净值与累计收益率 |
+| orders.csv | 独立订单明细 |
+| positions_flat.csv | 扁平持仓（stat_date, symbol, weight, rank） |
+| backtest_report.md | Markdown 报告（运行参数、Top 3 调仓期、输出文件索引） |
+| backtest_curves.html | Plotly 收益曲线图（组合 + 成分基金对照，需 `plotly` 依赖） |
+
 ## 常用命令
 
 ```bash

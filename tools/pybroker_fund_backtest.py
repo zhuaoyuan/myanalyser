@@ -21,6 +21,8 @@ import argparse
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _MYANALYSER_ROOT = _SCRIPT_DIR.parent
 _SRC = _MYANALYSER_ROOT / "src"
@@ -112,6 +114,7 @@ def main() -> None:
     print(f"[pybroker_backtest] 策略包: {bundle.name}")
 
     print("[pybroker_backtest] 运行回测...")
+    config = BacktestConfig(initial_cash=args.initial_cash)
     backtest_result = run_backtest(
         data,
         bundle,
@@ -120,12 +123,51 @@ def main() -> None:
         top_n=args.top_n,
         rebalance_period=args.rebalance,
         warmup=args.warmup,
-        config=BacktestConfig(initial_cash=args.initial_cash),
+        config=config,
     )
 
-    reports = write_reports(args.output_dir, backtest_result, data)
-    print(f"[pybroker_backtest] 汇总报告: {reports['summary']}")
-    print(f"[pybroker_backtest] 明细报告: {reports['detail']}")
+    run_config = {
+        "strategy": args.strategy,
+        "start_date": args.start_date,
+        "end_date": args.end_date,
+        "rebalance": args.rebalance,
+        "top_n": args.top_n,
+        "warmup": args.warmup,
+        "initial_cash": args.initial_cash,
+    }
+    reports = write_reports(
+        args.output_dir,
+        backtest_result,
+        data,
+        run_config=run_config,
+        initial_cash=config.initial_cash,
+    )
+
+    # 控制台核心指标摘要
+    summary_df = pd.read_csv(reports["summary"], encoding="utf-8-sig")
+    metrics = summary_df[summary_df["section"] == "metrics"]
+    if not metrics.empty:
+        key_names = ["近1年年化收益率", "近3年年化收益率", "近1年最大回撤率", "近1年夏普比率", "近1年卡玛比率"]
+        parts = []
+        for _, row in metrics.iterrows():
+            name = str(row.get("name", ""))
+            if name in key_names:
+                val = row.get("value")
+                if val is not None and str(val) != "nan":
+                    try:
+                        fval = float(val)
+                        parts.append(f"{name}: {fval:.2%}" if "率" in name or "收益" in name else f"{name}: {fval:.2f}")
+                    except (TypeError, ValueError):
+                        parts.append(f"{name}: {val}")
+        if parts:
+            print(f"[pybroker_backtest] {' | '.join(parts)}")
+
+    print(f"[pybroker_backtest] 汇总: {reports['summary']}")
+    print(f"[pybroker_backtest] 明细: {reports['detail']}")
+    print(f"[pybroker_backtest] 净值曲线: {reports['equity_curve']}")
+    print(f"[pybroker_backtest] 报告: {reports['report_md']}")
+    if "curves_html" in reports:
+        print(f"[pybroker_backtest] 收益曲线图: {reports['curves_html']}")
 
 
 if __name__ == "__main__":

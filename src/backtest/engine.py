@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import pybroker as pyb
@@ -188,17 +189,245 @@ def _extract_portfolio_snapshot(portfolio_df: pd.DataFrame, date: pd.Timestamp) 
     return out
 
 
+def _build_equity_curve(
+    portfolio_df: pd.DataFrame | None,
+    trading_dates: list[pd.Timestamp],
+    initial_cash: float,
+) -> pd.DataFrame:
+    """从 portfolio 构建每日净值曲线。"""
+    eq_aligned = pd.Series(dtype=float)
+    if portfolio_df is not None and not portfolio_df.empty:
+        col = "total_equity" if "total_equity" in portfolio_df.columns else "market_value"
+        if col in portfolio_df.columns:
+            eq = portfolio_df[col]
+            if isinstance(portfolio_df.index, pd.DatetimeIndex):
+                eq = eq[~eq.index.duplicated(keep="last")].sort_index().dropna()
+                eq_aligned = eq
+    if eq_aligned.empty and trading_dates:
+        eq_aligned = pd.Series(
+            index=pd.DatetimeIndex(trading_dates),
+            data=float(initial_cash),
+        )
+    if eq_aligned.empty:
+        return pd.DataFrame(columns=["date", "equity", "cumulative_return"])
+    base = float(eq_aligned.iloc[0]) if eq_aligned.iloc[0] > 0 else 1.0
+    cum_ret = eq_aligned / base - 1.0
+    return pd.DataFrame({
+        "date": eq_aligned.index,
+        "equity": eq_aligned.values,
+        "cumulative_return": cum_ret.values,
+    }).reset_index(drop=True)
+
+
+def _compute_portfolio_metrics_fund_core(
+    equity_curve: pd.DataFrame,
+    trading_days_per_year: int = 252,
+) -> dict[str, float | None]:
+    """用 fund_metrics_core 口径计算组合指标。"""
+    if equity_curve.empty or len(equity_curve) < 2:
+        return {}
+    try:
+        from fund_metrics_core import compute_low_risk_debt_metrics, WindowConfig
+    except ModuleNotFoundError:
+        return {}
+
+    dates = equity_curve["date"].to_numpy(dtype="datetime64[D]")
+    prices = equity_curve["equity"].to_numpy(dtype=float)
+    cfg = WindowConfig(trading_days_per_year=trading_days_per_year)
+    out = compute_low_risk_debt_metrics(dates, prices, config=cfg)
+    return {k: (round(v, 6) if isinstance(v, float) else v) for k, v in out.items()}
+
+
+def _write_html_curves(
+    output_dir: Path,
+    equity_curve: pd.DataFrame,
+    data: BacktestData,
+    period_log: list[dict],
+    max_fund_curves: int = 10,
+) -> Path | None:
+    """生成 Plotly HTML 收益曲线图。"""
+    try:
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+    except ImportError:
+        return None
+
+    if equity_curve.empty or len(equity_curve) < 2:
+        return None
+
+    dates = pd.to_datetime(equity_curve["date"])
+    portfolio_cum = equity_curve["cumulative_return"].values
+
+    # 收集曾持有的基金，按持有期数排序取前 max_fund_curves
+    symbol_counts: dict[str, int] = {}
+    for p in period_log:
+        for s in p.get("selected_symbols", []):
+            symbol_counts[s] = symbol_counts.get(s, 0) + 1
+    top_symbols = sorted(symbol_counts.keys(), key=lambda x: -symbol_counts.get(x, 0))[:max_fund_curves]
+
+    # 基金累计收益（归一化到首日=1）
+    fund_curves: list[tuple[str, pd.Series]] = []
+    start_ts = dates.min()
+    end_ts = dates.max()
+    for sym in top_symbols:
+        df_sym = data.by_symbol.get(sym)
+        if df_sym is None or df_sym.empty:
+            continue
+        sym_dates = pd.to_datetime(df_sym["date"])
+        mask = (sym_dates >= start_ts) & (sym_dates <= end_ts)
+        win = df_sym.loc[mask].sort_values("date")
+        if len(win) < 2:
+            continue
+        base = float(win["close"].iloc[0])
+        if base <= 0:
+            continue
+        cum = win["close"].values / base - 1.0
+        s = pd.Series(cum, index=win["date"].values)
+        fund_curves.append((sym, s))
+
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        subplot_titles=("组合净值曲线", "组合 vs 成分基金收益曲线"),
+        vertical_spacing=0.12,
+        row_heights=[0.45, 0.55],
+    )
+
+    # 上图：组合累计收益
+    fig.add_trace(
+        go.Scatter(
+            x=dates,
+            y=portfolio_cum * 100,
+            name="组合",
+            line=dict(color="#1f77b4", width=2),
+        ),
+        row=1,
+        col=1,
+    )
+    fig.update_yaxes(title_text="累计收益率 (%)", row=1, col=1)
+
+    # 下图：组合 + 各基金
+    fig.add_trace(
+        go.Scatter(
+            x=dates,
+            y=portfolio_cum * 100,
+            name="组合",
+            line=dict(color="#1f77b4", width=2.5),
+        ),
+        row=2,
+        col=1,
+    )
+    colors = ["#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf", "#aec7e8"]
+    for i, (sym, s) in enumerate(fund_curves):
+        s_dates = pd.to_datetime(s.index)
+        s_reindexed = pd.Series(s.values, index=s_dates).reindex(dates, method="ffill").dropna()
+        if s_reindexed.empty:
+            continue
+        y = s_reindexed.values * 100
+        x = s_reindexed.index
+        fig.add_trace(
+            go.Scatter(
+                x=x,
+                y=y,
+                name=sym,
+                line=dict(color=colors[i % len(colors)], width=1, dash="dot"),
+            ),
+            row=2,
+            col=1,
+        )
+    fig.update_yaxes(title_text="累计收益率 (%)", row=2, col=1)
+    fig.update_layout(
+        height=700,
+        title_text="回测收益曲线",
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    path = output_dir / "backtest_curves.html"
+    fig.write_html(str(path), config={"displayModeBar": True})
+    return path
+
+
+def _render_markdown_report(
+    output_dir: Path,
+    summary_rows: list[dict],
+    detail_df: pd.DataFrame,
+    run_config: dict[str, Any],
+    equity_curve_path: Path | None,
+) -> Path:
+    """生成 Markdown 报告。"""
+    lines = [
+        "# PyBroker 回测报告",
+        "",
+        "## 运行参数",
+    ]
+    for k, v in run_config.items():
+        lines.append(f"- {k}: {v}")
+    lines.extend(["", "## 汇总指标", ""])
+
+    # 按 section 分组
+    by_section: dict[str, list[tuple[str, Any]]] = {}
+    for r in summary_rows:
+        sec = r.get("section", "other")
+        name = r.get("name", "")
+        val = r.get("value", "")
+        if sec not in by_section:
+            by_section[sec] = []
+        by_section[sec].append((name, val))
+
+    for sec in ["config", "data", "metrics"]:
+        if sec not in by_section:
+            continue
+        lines.append(f"### {sec}")
+        for name, val in by_section[sec]:
+            lines.append(f"- **{name}**: {val}")
+        lines.append("")
+
+    if not detail_df.empty:
+        lines.extend(["", "## Top 3 调仓期（按 period_return 降序）", ""])
+        if "period_return" in detail_df.columns:
+            top = detail_df.dropna(subset=["period_return"]).nlargest(3, "period_return")
+        else:
+            top = detail_df.head(3)
+        lines.append("| stat_date | fill_date | period_return | turnover |")
+        lines.append("|-----------|-----------|---------------|----------|")
+        for _, row in top.iterrows():
+            pr = row.get("period_return", "")
+            pr_str = f"{float(pr):.4f}" if pr not in (None, "") and str(pr) != "nan" else "-"
+            lines.append(
+                f"| {row.get('stat_date', '')} | {row.get('fill_date', '')} | {pr_str} | {row.get('turnover', '')} |"
+            )
+        lines.append("")
+
+    lines.extend(["", "## 输出文件", ""])
+    for f in ["summary.csv", "period_detail.csv", "equity_curve.csv", "orders.csv", "positions_flat.csv"]:
+        p = output_dir / f
+        lines.append(f"- {f}")
+    if equity_curve_path and equity_curve_path.exists():
+        lines.append(f"- [backtest_curves.html]({equity_curve_path.name})（收益曲线可视化）")
+    lines.append("")
+
+    report_path = output_dir / "backtest_report.md"
+    report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return report_path
+
+
 def write_reports(
     output_dir: Path,
     backtest_result: BacktestResult,
     data: BacktestData,
+    run_config: dict[str, Any] | None = None,
+    initial_cash: float = 100_000,
 ) -> dict[str, Path]:
     _ensure_dir(output_dir)
 
     result = backtest_result.result
     period_log = backtest_result.period_log
+    run_config = run_config or {}
 
+    # 运行参数写入 summary
     summary_rows = []
+    for k, v in run_config.items():
+        summary_rows.append({"section": "config", "name": str(k), "value": v if v is None else str(v)})
     summary_rows.append({"section": "data", "name": "symbols", "value": len(data.by_symbol)})
     if data.trading_dates:
         summary_rows.append({
@@ -206,17 +435,6 @@ def write_reports(
             "name": "date_range",
             "value": f"{data.trading_dates[0].date()} ~ {data.trading_dates[-1].date()}",
         })
-
-    metrics_df = getattr(result, "metrics_df", None)
-    if metrics_df is not None and not metrics_df.empty:
-        for _, row in metrics_df.iterrows():
-            summary_rows.append(
-                {"section": "metrics", "name": row.get("name"), "value": row.get("value")}
-            )
-
-    summary_df = pd.DataFrame(summary_rows)
-    summary_path = output_dir / "summary.csv"
-    summary_df.to_csv(summary_path, index=False, encoding="utf-8-sig")
 
     orders_df = getattr(result, "orders", None)
     if orders_df is None or orders_df.empty:
@@ -227,15 +445,57 @@ def write_reports(
     else:
         orders_df["fill_date"] = pd.NaT
 
-    portfolio_df = getattr(result, "portfolio", None)
+    # 独立 orders.csv
+    orders_out = orders_df.copy()
+    if "fill_date" in orders_out.columns:
+        orders_out["fill_date"] = orders_out["fill_date"].dt.strftime("%Y-%m-%d")
+    orders_path = output_dir / "orders.csv"
+    orders_out.to_csv(orders_path, index=False, encoding="utf-8-sig")
 
-    detail_rows = []
+    portfolio_df = getattr(result, "portfolio", None)
+    equity_curve = _build_equity_curve(
+        portfolio_df,
+        data.trading_dates,
+        initial_cash,
+    )
+    equity_path = output_dir / "equity_curve.csv"
+    equity_curve.to_csv(equity_path, index=False, encoding="utf-8-sig")
+
+    # fund_metrics_core 指标
+    metrics_core = _compute_portfolio_metrics_fund_core(equity_curve)
+    for name, val in metrics_core.items():
+        if val is not None:
+            summary_rows.append({"section": "metrics", "name": name, "value": val})
+
+    # PyBroker 原生 metrics_df
+    metrics_df = getattr(result, "metrics_df", None)
+    if metrics_df is not None and not metrics_df.empty:
+        for _, row in metrics_df.iterrows():
+            summary_rows.append(
+                {"section": "metrics_pybroker", "name": row.get("name"), "value": row.get("value")}
+            )
+
+    summary_df = pd.DataFrame(summary_rows)
+    summary_path = output_dir / "summary.csv"
+    summary_df.to_csv(summary_path, index=False, encoding="utf-8-sig")
+
     trading_dates = data.trading_dates
     fill_map = {}
     for i in range(1, len(trading_dates)):
         fill_map[pd.Timestamp(trading_dates[i - 1])] = pd.Timestamp(trading_dates[i])
 
-    for p in period_log:
+    # 构建 equity 按日期查找
+    equity_by_date = {}
+    if not equity_curve.empty:
+        for _, r in equity_curve.iterrows():
+            d = pd.Timestamp(r["date"]).normalize()
+            equity_by_date[d] = float(r["equity"])
+
+    stat_dates = [pd.Timestamp(p["stat_date"]).normalize() for p in period_log]
+
+    detail_rows = []
+    position_flat_rows = []
+    for i, p in enumerate(period_log):
         stat_date = pd.Timestamp(p["stat_date"])
         fill_date = fill_map.get(stat_date)
         buys = []
@@ -252,6 +512,28 @@ def write_reports(
                     sells.append({"symbol": sym, "shares": sh, "fill_price": fp})
 
         snapshot = _extract_portfolio_snapshot(portfolio_df, stat_date)
+        eq_curr = snapshot.get("total_equity") or equity_by_date.get(stat_date)
+
+        # period_return
+        period_return = None
+        if i + 1 < len(stat_dates):
+            eq_next = equity_by_date.get(stat_dates[i + 1]) or _extract_portfolio_snapshot(portfolio_df, stat_dates[i + 1]).get("total_equity")
+            if eq_curr is not None and eq_next is not None and float(eq_curr) > 0:
+                period_return = float(eq_next) / float(eq_curr) - 1.0
+        elif eq_curr is not None and len(equity_by_date) > 0:
+            last_d = max(equity_by_date.keys())
+            eq_next = equity_by_date.get(last_d)
+            if eq_next is not None and float(eq_curr) > 0:
+                period_return = float(eq_next) / float(eq_curr) - 1.0
+
+        weights = p.get("target_weights", {})
+        for rank, (sym, w) in enumerate(weights.items(), start=1):
+            position_flat_rows.append({
+                "stat_date": stat_date.strftime("%Y-%m-%d"),
+                "symbol": sym,
+                "weight": w,
+                "rank": rank,
+            })
 
         detail_rows.append(
             {
@@ -260,6 +542,7 @@ def write_reports(
                 "universe_size": p["universe_size"],
                 "candidate_size": p["candidate_size"],
                 "top_n": p["top_n"],
+                "period_return": period_return,
                 "selected_symbols": json.dumps(p["selected_symbols"], ensure_ascii=False),
                 "target_weights": json.dumps(p["target_weights"], ensure_ascii=False),
                 "prev_weights": json.dumps(p["prev_weights"], ensure_ascii=False),
@@ -271,12 +554,47 @@ def write_reports(
                 "orders_sell": json.dumps(sells, ensure_ascii=False),
                 "portfolio_cash": snapshot.get("cash"),
                 "portfolio_market_value": snapshot.get("market_value"),
-                "portfolio_total_equity": snapshot.get("total_equity"),
+                "portfolio_total_equity": eq_curr,
             }
         )
 
-    detail_df = pd.DataFrame(detail_rows)
+    detail_columns = [
+        "stat_date", "fill_date", "universe_size", "candidate_size", "top_n", "period_return",
+        "selected_symbols", "target_weights", "prev_weights", "scores_top",
+        "turnover", "gross_turnover", "cash_ratio",
+        "orders_buy", "orders_sell",
+        "portfolio_cash", "portfolio_market_value", "portfolio_total_equity",
+    ]
+    detail_df = pd.DataFrame(detail_rows, columns=detail_columns if not detail_rows else None)
     detail_path = output_dir / "period_detail.csv"
     detail_df.to_csv(detail_path, index=False, encoding="utf-8-sig")
 
-    return {"summary": summary_path, "detail": detail_path}
+    positions_path = output_dir / "positions_flat.csv"
+    pd.DataFrame(
+        position_flat_rows if position_flat_rows else [],
+        columns=["stat_date", "symbol", "weight", "rank"],
+    ).to_csv(positions_path, index=False, encoding="utf-8-sig")
+
+    # HTML 曲线
+    curves_path = _write_html_curves(output_dir, equity_curve, data, period_log)
+
+    # Markdown 报告
+    md_path = _render_markdown_report(
+        output_dir,
+        summary_rows,
+        detail_df,
+        run_config,
+        curves_path,
+    )
+
+    out: dict[str, Path] = {
+        "summary": summary_path,
+        "detail": detail_path,
+        "equity_curve": equity_path,
+        "orders": orders_path,
+        "positions_flat": positions_path,
+        "report_md": md_path,
+    }
+    if curves_path is not None:
+        out["curves_html"] = curves_path
+    return out

@@ -250,7 +250,7 @@ class TestNormalScenarios(unittest.TestCase):
         self.assertIsInstance(result.period_log, list)
 
     def test_write_reports_creates_summary_and_detail(self) -> None:
-        """正常：报表写入生成 summary.csv 与 period_detail.csv。"""
+        """正常：报表写入生成 summary、detail、equity_curve、orders、positions_flat、report_md。"""
         data = _make_backtest_data(2, 300)
         bundle = build_bundle()
         result = run_backtest(
@@ -263,10 +263,20 @@ class TestNormalScenarios(unittest.TestCase):
             paths = write_reports(out_dir, result, data)
             self.assertIn("summary", paths)
             self.assertIn("detail", paths)
+            self.assertIn("equity_curve", paths)
+            self.assertIn("orders", paths)
+            self.assertIn("positions_flat", paths)
+            self.assertIn("report_md", paths)
             self.assertTrue(paths["summary"].exists())
             self.assertTrue(paths["detail"].exists())
+            self.assertTrue(paths["equity_curve"].exists())
+            self.assertTrue(paths["orders"].exists())
+            self.assertTrue(paths["positions_flat"].exists())
+            self.assertTrue(paths["report_md"].exists())
             summary_df = pd.read_csv(paths["summary"], encoding="utf-8-sig")
             self.assertFalse(summary_df.empty)
+            detail_df = pd.read_csv(paths["detail"], encoding="utf-8-sig")
+            self.assertIn("period_return", detail_df.columns)
 
 
 # ==================== 异常场景 ====================

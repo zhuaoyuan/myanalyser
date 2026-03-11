@@ -20,6 +20,12 @@ class BacktestResult:
     period_log: list[dict]
 
 
+@dataclass(frozen=True)
+class BacktestConfig:
+    initial_cash: float = 100_000
+    turnover_half: float = 0.5  # 单向换手近似
+
+
 def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
@@ -47,7 +53,9 @@ def run_backtest(
     top_n: int,
     rebalance_period: int,
     warmup: int,
+    config: BacktestConfig | None = None,
 ) -> BacktestResult:
+    cfg = config or BacktestConfig()
     start_ts = pd.Timestamp(start_date).normalize()
     end_ts = pd.Timestamp(end_date).normalize()
 
@@ -71,8 +79,11 @@ def run_backtest(
         current_date = getattr(first_ctx, "date", None)
         if current_date is None:
             return
-        if hasattr(current_date, "__len__"):
-            current_date = current_date[-1]
+        if hasattr(current_date, "__len__") and not isinstance(current_date, (str, bytes)):
+            try:
+                current_date = current_date[-1]
+            except Exception:
+                pass
         current_ts = pd.Timestamp(current_date).normalize()
 
         if current_ts not in rebalance_set:
@@ -93,7 +104,7 @@ def run_backtest(
             abs(weights.get(s, 0.0) - prev_weights.get(s, 0.0))
             for s in set(weights) | set(prev_weights)
         )
-        turnover = 0.5 * gross_turnover
+        turnover = cfg.turnover_half * gross_turnover
         cash_ratio = 1.0 - sum(weights.values())
 
         period_log.append(
@@ -126,20 +137,21 @@ def run_backtest(
             return
         target_weights = pyb.param("target_weights") or {}
         if ctx.long_pos():
-            if ctx.symbol not in target_weights:
+            target = target_weights.get(ctx.symbol, 0.0)
+            if ctx.symbol not in target_weights or target <= 0:
                 ctx.sell_all_shares()
             else:
-                target = target_weights.get(ctx.symbol, 0.0)
                 ctx.buy_shares = ctx.calc_target_shares(target)
                 ctx.hold_bars = rebalance_period
         else:
             if ctx.symbol in target_weights:
                 target = target_weights.get(ctx.symbol, 0.0)
-                ctx.buy_shares = ctx.calc_target_shares(target)
-                ctx.hold_bars = rebalance_period
+                if target > 0:
+                    ctx.buy_shares = ctx.calc_target_shares(target)
+                    ctx.hold_bars = rebalance_period
 
     config = StrategyConfig(
-        initial_cash=100_000,
+        initial_cash=cfg.initial_cash,
         max_long_positions=top_n,
         buy_delay=1,
         sell_delay=1,
@@ -230,7 +242,7 @@ def write_reports(
         sells = []
         if fill_date is not None and not orders_df.empty:
             mask = orders_df["fill_date"] == fill_date
-            for _, r in orders_df[mask].iterrows():
+            for r in orders_df[mask].to_dict("records"):
                 sym = r.get("symbol", "?")
                 sh = r.get("shares", 0)
                 fp = r.get("fill_price", 0)

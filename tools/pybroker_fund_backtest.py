@@ -25,28 +25,29 @@ if str(_SRC) not in sys.path:
 from project_paths import project_root
 
 from backtest import load_fund_nav_data, run_backtest
+from backtest.engine import BacktestConfig
 from backtest.engine import write_reports
 from backtest.strategies.registry import get_strategy_bundle, list_strategy_names
 
-_DEFAULT_NAV_DIR = (
-    project_root().parent
-    / "finance-runs"
-    / "run_20260310_191534"
-    / "data"
-    / "versions"
-    / "20260310_191534"
-    / "fund_etl"
-    / "fund_adjusted_nav_by_code"
-)
+def _guess_latest_run_data_dir() -> Path | None:
+    runs_dir = project_root().parent / "finance-runs"
+    if not runs_dir.is_dir():
+        return None
+    candidates = [p for p in runs_dir.iterdir() if p.is_dir() and p.name.startswith("run_")]
+    if not candidates:
+        return None
+    latest = sorted(candidates, key=lambda p: p.name)[-1]
+    return latest / "data"
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="PyBroker 基金回测（策略包模式）")
+    default_nav_dir = _guess_latest_run_data_dir()
     parser.add_argument(
         "--nav-dir",
         type=Path,
-        default=_DEFAULT_NAV_DIR,
-        help=f"复权净值目录或 run data 目录，默认 {_DEFAULT_NAV_DIR}",
+        default=default_nav_dir,
+        help="复权净值目录或 run data 目录，默认自动选择最新 run",
     )
     parser.add_argument(
         "--strategy",
@@ -59,6 +60,7 @@ def main() -> None:
     parser.add_argument("--rebalance", type=int, default=20, help="调仓周期（交易日数）")
     parser.add_argument("--top-n", type=int, default=3, help="持仓基金数量")
     parser.add_argument("--warmup", type=int, default=252, help="策略预热 bar 数")
+    parser.add_argument("--initial-cash", type=float, default=100_000, help="初始资金")
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -66,6 +68,9 @@ def main() -> None:
         help="输出目录",
     )
     args = parser.parse_args()
+
+    if args.nav_dir is None:
+        raise SystemExit("未找到可用的默认数据目录，请显式传入 --nav-dir")
 
     print(f"[pybroker_backtest] 加载数据: {args.nav_dir}")
     data = load_fund_nav_data(
@@ -92,6 +97,7 @@ def main() -> None:
         top_n=args.top_n,
         rebalance_period=args.rebalance,
         warmup=args.warmup,
+        config=BacktestConfig(initial_cash=args.initial_cash),
     )
 
     reports = write_reports(args.output_dir, backtest_result, data)

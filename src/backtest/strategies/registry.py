@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Dict
-
 from .base import StrategyBundle
 from .low_risk_debt import build_bundle as build_low_risk_debt
 

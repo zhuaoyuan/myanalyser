@@ -51,6 +51,8 @@ def load_fund_nav_data(
 
     rows = []
     by_symbol: dict[str, pd.DataFrame] = {}
+    start_ts = pd.Timestamp(start_date) if start_date else None
+    end_ts = pd.Timestamp(end_date) if end_date else None
 
     for p in csv_files:
         df = pd.read_csv(p, dtype={"基金代码": str}, encoding="utf-8-sig")
@@ -59,10 +61,10 @@ def load_fund_nav_data(
         df = df.copy()
         df["净值日期"] = pd.to_datetime(df["净值日期"], errors="coerce")
         df = df.dropna(subset=["净值日期", "复权净值"])
-        if start_date:
-            df = df[df["净值日期"] >= start_date]
-        if end_date:
-            df = df[df["净值日期"] <= end_date]
+        if start_ts is not None:
+            df = df[df["净值日期"] >= start_ts]
+        if end_ts is not None:
+            df = df[df["净值日期"] <= end_ts]
         if df.empty:
             continue
 
@@ -71,7 +73,7 @@ def load_fund_nav_data(
         df = df.sort_values("净值日期")
         df_symbol = pd.DataFrame(
             {
-                "date": pd.to_datetime(df["净值日期"], errors="coerce"),
+                "date": df["净值日期"],
                 "close": pd.to_numeric(df["复权净值"], errors="coerce"),
             }
         ).dropna()
@@ -79,23 +81,18 @@ def load_fund_nav_data(
             continue
 
         by_symbol[symbol] = df_symbol.reset_index(drop=True)
-        for _, r in df_symbol.iterrows():
-            nav = float(r["close"])
-            rows.append(
-                {
-                    "symbol": symbol,
-                    "date": r["date"],
-                    "open": nav,
-                    "high": nav,
-                    "low": nav,
-                    "close": nav,
-                }
-            )
+        chunk = df_symbol.assign(
+            symbol=symbol,
+            open=df_symbol["close"],
+            high=df_symbol["close"],
+            low=df_symbol["close"],
+        )
+        rows.append(chunk[["symbol", "date", "open", "high", "low", "close"]])
 
     if not rows:
         raise ValueError("未加载到任何有效净值数据")
 
-    long_df = pd.DataFrame(rows).sort_values(["symbol", "date"]).reset_index(drop=True)
+    long_df = pd.concat(rows, ignore_index=True).sort_values(["symbol", "date"]).reset_index(drop=True)
     trading_dates = sorted(
         pd.Series(long_df["date"].unique()).dropna().map(lambda d: pd.Timestamp(d).normalize()).tolist()
     )

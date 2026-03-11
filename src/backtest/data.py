@@ -51,14 +51,14 @@ def load_fund_nav_data(
 ) -> BacktestData:
     """从 fund_adjusted_nav_by_code 目录加载复权净值并构建回测数据结构。
 
-    若 provided allowed_codes，仅加载该集合中的基金（与 nav_dir 下实际存在的文件取交集）。
+    若传入 allowed_codes，仅加载该集合中的基金（与 nav_dir 下实际存在的文件取交集）。
     """
 
     nav_dir = _resolve_nav_dir(nav_dir)
     all_files = sorted(nav_dir.glob("*.csv"))
     if allowed_codes is not None:
         allowed = {str(c).strip().zfill(6) for c in allowed_codes}
-        all_files = [p for p in all_files if p.stem in allowed]
+        all_files = [p for p in all_files if str(p.stem).strip().zfill(6) in allowed]
     csv_files = all_files[:max_funds]
     if not csv_files:
         raise ValueError(f"净值目录下没有 CSV 文件: {nav_dir}")

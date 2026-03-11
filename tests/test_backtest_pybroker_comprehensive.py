@@ -200,6 +200,21 @@ class TestNormalScenarios(unittest.TestCase):
             )
             self.assertEqual(set(data.by_symbol.keys()), {"000001", "000003"})
 
+    def test_load_fund_nav_data_allowed_codes_normalizes_stem(self) -> None:
+        """正常：allowed_codes 与文件 stem 比较时做相同归一化（如 1.csv -> 000001）。"""
+        with tempfile.TemporaryDirectory() as d:
+            nav_dir = Path(d) / "nav"
+            nav_dir.mkdir()
+            dates = pd.date_range("2023-01-01", periods=100, freq="B").strftime("%Y-%m-%d")
+            navs = [1.0 + 0.001 * i for i in range(100)]
+            _make_fund_nav_csv(nav_dir / "1.csv", "1", dates.tolist(), navs)
+            _make_fund_nav_csv(nav_dir / "2.csv", "2", dates.tolist(), [1.0] * 100)
+            _make_fund_nav_csv(nav_dir / "000003.csv", "000003", dates.tolist(), navs)
+            data = load_fund_nav_data(
+                nav_dir, max_funds=10, allowed_codes={"000001", "000002"}
+            )
+            self.assertEqual(set(data.by_symbol.keys()), {"000001", "000002"})
+
     def test_load_fund_nav_data_valid_dir(self) -> None:
         """正常：有效净值目录加载成功。"""
         with tempfile.TemporaryDirectory() as d:

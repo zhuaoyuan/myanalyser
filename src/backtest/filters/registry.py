@@ -33,7 +33,7 @@ def get_filter_chain() -> list[FundFilter]:
 
 
 def apply_filter_chain(candidates: set[str], filters: list[FundFilter]) -> set[str]:
-    """对候选集依次应用过滤器链（每步取交集/子集）。"""
+    """对候选集依次应用过滤器链（每步取交集/子集）；若某步结果为空则提前终止。"""
     result = candidates
     for f in filters:
         result = f.filter(result)

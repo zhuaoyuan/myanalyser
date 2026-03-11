@@ -35,7 +35,7 @@ class FilteredCandidatesCsvFilter:
         if df.empty or "基金编码" not in df.columns:
             return candidates
         if "是否过滤" in df.columns:
-            allowed_df = df[df["是否过滤"] == "否"]
+            allowed_df = df[df["是否过滤"].astype(str).str.strip() == "否"]
         else:
             allowed_df = df
         allowed = {_safe_code(c) for c in allowed_df["基金编码"].dropna().tolist()}

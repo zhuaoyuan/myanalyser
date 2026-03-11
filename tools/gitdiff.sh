@@ -21,11 +21,16 @@ fi
 # 3. 执行 diff
 # HEAD   代表最新一次 commit (v0311.2)
 # HEAD~1 代表倒数第二次 commit (v0311)
-git diff HEAD~1..HEAD > tmp/temp_diff.diff
+
+# 获取最新的 Commit ID 短哈希
+COMMIT_ID=$(git rev-parse --short HEAD)
+
+# 生成文件名：temp_diff_a1b2c3d.diff
+git diff HEAD~1..HEAD > "tmp/temp_diff_${COMMIT_ID}.diff"
 
 # 4. 检查执行结果
 if [ $? -eq 0 ]; then
-    echo "成功: 已将 HEAD~1 与 HEAD 的差异保存至 tmp/temp_diff.diff。"
+    echo "成功: 已将 HEAD~1 与 HEAD 的差异保存至 tmp/temp_diff_${COMMIT_ID}.diff。"
 else
     echo "失败: git diff 执行出错。"
     exit 1

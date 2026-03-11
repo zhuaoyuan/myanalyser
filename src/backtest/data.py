@@ -36,16 +36,30 @@ def _resolve_nav_dir(nav_dir: Path) -> Path:
     raise FileNotFoundError(f"无法定位净值目录: {nav_dir}")
 
 
+def get_available_symbols(nav_dir: Path) -> set[str]:
+    """返回净值目录下可用的基金编码集合（6 位补零）。"""
+    nav_dir = _resolve_nav_dir(nav_dir)
+    return {str(p.stem).strip().zfill(6) for p in nav_dir.glob("*.csv")}
+
+
 def load_fund_nav_data(
     nav_dir: Path,
     max_funds: int = 200,
     start_date: str | None = None,
     end_date: str | None = None,
+    allowed_codes: set[str] | None = None,
 ) -> BacktestData:
-    """从 fund_adjusted_nav_by_code 目录加载复权净值并构建回测数据结构。"""
+    """从 fund_adjusted_nav_by_code 目录加载复权净值并构建回测数据结构。
+
+    若 provided allowed_codes，仅加载该集合中的基金（与 nav_dir 下实际存在的文件取交集）。
+    """
 
     nav_dir = _resolve_nav_dir(nav_dir)
-    csv_files = sorted(nav_dir.glob("*.csv"))[:max_funds]
+    all_files = sorted(nav_dir.glob("*.csv"))
+    if allowed_codes is not None:
+        allowed = {str(c).strip().zfill(6) for c in allowed_codes}
+        all_files = [p for p in all_files if p.stem in allowed]
+    csv_files = all_files[:max_funds]
     if not csv_files:
         raise ValueError(f"净值目录下没有 CSV 文件: {nav_dir}")
 

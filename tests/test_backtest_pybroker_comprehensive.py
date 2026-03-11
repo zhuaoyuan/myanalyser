@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import unittest
@@ -20,6 +21,18 @@ if str(_src) not in sys.path:
     sys.path.insert(0, str(_src))
 
 from myanalyser.src.backtest.data import BacktestData, load_fund_nav_data
+from myanalyser.src.backtest.filters import (
+    apply_filter_chain,
+    get_filter_chain,
+)
+from myanalyser.src.backtest.filters.filtered_candidates_csv import (
+    ENV_VAR as FILTERED_ENV,
+    FilteredCandidatesCsvFilter,
+)
+from myanalyser.src.backtest.filters.max_funds import (
+    ENV_VAR as MAX_FUNDS_ENV,
+    MaxFundsFilter,
+)
 from myanalyser.src.backtest.engine import (
     BacktestConfig,
     BacktestResult,
@@ -130,6 +143,63 @@ class TestNormalScenarios(unittest.TestCase):
         b2 = get_strategy_bundle("low_risk_debt")
         self.assertEqual(b1.name, b2.name)
 
+    def test_filter_chain_empty_when_env_not_set(self) -> None:
+        """正常：未设置 FUND_BACKTEST_FILTERS 时过滤器链为空。"""
+        old = os.environ.pop("FUND_BACKTEST_FILTERS", None)
+        try:
+            self.assertEqual(get_filter_chain(), [])
+        finally:
+            if old is not None:
+                os.environ["FUND_BACKTEST_FILTERS"] = old
+
+    def test_filtered_candidates_csv_filter_intersects(self) -> None:
+        """正常：FilteredCandidatesCsvFilter 取 CSV 白名单与 candidates 交集。"""
+        with tempfile.TemporaryDirectory() as d:
+            csv_path = Path(d) / "filtered.csv"
+            pd.DataFrame(
+                {"基金编码": ["000001", "000003"], "是否过滤": ["否", "否"], "过滤原因": ["", ""]}
+            ).to_csv(csv_path, index=False, encoding="utf-8-sig")
+            old = os.environ.pop(FILTERED_ENV, None)
+            try:
+                os.environ[FILTERED_ENV] = str(csv_path)
+                f = FilteredCandidatesCsvFilter()
+                out = f.filter({"000001", "000002", "000003"})
+                self.assertEqual(out, {"000001", "000003"})
+            finally:
+                if old is not None:
+                    os.environ[FILTERED_ENV] = old
+                else:
+                    os.environ.pop(FILTERED_ENV, None)
+
+    def test_max_funds_filter_caps(self) -> None:
+        """正常：MaxFundsFilter 按数量截断。"""
+        old = os.environ.pop(MAX_FUNDS_ENV, None)
+        try:
+            os.environ[MAX_FUNDS_ENV] = "2"
+            f = MaxFundsFilter()
+            out = f.filter({"000003", "000001", "000002"})
+            self.assertEqual(out, {"000001", "000002"})
+        finally:
+            if old is not None:
+                os.environ[MAX_FUNDS_ENV] = old
+            else:
+                os.environ.pop(MAX_FUNDS_ENV, None)
+
+    def test_load_fund_nav_data_with_allowed_codes(self) -> None:
+        """正常：allowed_codes 限制加载的基金集合。"""
+        with tempfile.TemporaryDirectory() as d:
+            nav_dir = Path(d) / "nav"
+            nav_dir.mkdir()
+            dates = pd.date_range("2023-01-01", periods=100, freq="B").strftime("%Y-%m-%d")
+            navs = [1.0 + 0.001 * i for i in range(100)]
+            _make_fund_nav_csv(nav_dir / "000001.csv", "000001", dates.tolist(), navs)
+            _make_fund_nav_csv(nav_dir / "000002.csv", "000002", dates.tolist(), [1.0] * 100)
+            _make_fund_nav_csv(nav_dir / "000003.csv", "000003", dates.tolist(), navs)
+            data = load_fund_nav_data(
+                nav_dir, max_funds=10, allowed_codes={"000001", "000003"}
+            )
+            self.assertEqual(set(data.by_symbol.keys()), {"000001", "000003"})
+
     def test_load_fund_nav_data_valid_dir(self) -> None:
         """正常：有效净值目录加载成功。"""
         with tempfile.TemporaryDirectory() as d:
@@ -195,6 +265,20 @@ class TestExceptionScenarios(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             get_strategy_bundle("nonexistent_strategy")
         self.assertIn("未知策略包", str(ctx.exception))
+
+    def test_filter_registry_unknown_raises(self) -> None:
+        """异常：未知过滤器名抛出 ValueError。"""
+        old = os.environ.pop("FUND_BACKTEST_FILTERS", None)
+        try:
+            os.environ["FUND_BACKTEST_FILTERS"] = "unknown_filter"
+            with self.assertRaises(ValueError) as ctx:
+                get_filter_chain()
+            self.assertIn("未知过滤器", str(ctx.exception))
+        finally:
+            if old is not None:
+                os.environ["FUND_BACKTEST_FILTERS"] = old
+            else:
+                os.environ.pop("FUND_BACKTEST_FILTERS", None)
 
     def test_load_nav_dir_not_exists_raises(self) -> None:
         """异常：目录不存在抛出 FileNotFoundError。"""

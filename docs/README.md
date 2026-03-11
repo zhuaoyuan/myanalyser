@@ -50,6 +50,24 @@ myanalyser/
 - `src/transforms/build_filtered_purchase_csv.py`：根据过滤结果生成 `fund_purchase_for_step10_filtered.csv`
 - `src/compute_fund_composite_score.py`：基金综合得分计算（对 filtered/scoreboard CSV 做归一化+分组加权，输出带得分的 CSV）
 - `src/filter_score/`：筛选与打分模块（入口 `filter_and_score_main.py`，可扩展过滤与算分策略，内置样例：最稳健原则过滤、低风险偏债得分）
+- `src/backtest/`：PyBroker 回测框架（数据加载、指标计算、策略包、**多过滤器链**）；CLI `tools/pybroker_fund_backtest.py`
+
+### PyBroker 回测过滤器链
+
+通过环境变量 `FUND_BACKTEST_FILTERS` 指定链式过滤器（逗号分隔），主流程不感知具体实现：
+
+| 过滤器名 | 环境变量 | 说明 |
+|----------|----------|------|
+| `filtered_candidates` | `FILTERED_FUND_CANDIDATES_CSV` | 从 filtered_fund_candidates.csv 取 是否过滤=否 的基金编码 |
+| `max_funds` | `FUND_BACKTEST_MAX_FUNDS` | 按数量截断（取前 N 个，按编码排序） |
+
+示例：
+```bash
+export FUND_BACKTEST_FILTERS=filtered_candidates,max_funds
+export FILTERED_FUND_CANDIDATES_CSV=finance-runs/run_xxx/artifacts/full_run_xxx/filtered_fund_candidates.csv
+export FUND_BACKTEST_MAX_FUNDS=50
+python myanalyser/tools/pybroker_fund_backtest.py --nav-dir finance-runs/run_xxx/data ...
+```
 
 ## 常用命令
 

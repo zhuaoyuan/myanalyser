@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """PyBroker 基金回测（策略包模式）。
 
+支持多过滤器链：通过环境变量 FUND_BACKTEST_FILTERS 指定（逗号分隔），如：
+  FUND_BACKTEST_FILTERS=filtered_candidates,max_funds
+  FILTERED_FUND_CANDIDATES_CSV=path/to/filtered_fund_candidates.csv
+  FUND_BACKTEST_MAX_FUNDS=50
+
 示例：
   python tools/pybroker_fund_backtest.py \
     --nav-dir finance-runs/run_20260310_191534/data \
@@ -24,7 +29,13 @@ if str(_SRC) not in sys.path:
 
 from project_paths import project_root
 
-from backtest import load_fund_nav_data, run_backtest
+from backtest import (
+    apply_filter_chain,
+    get_available_symbols,
+    get_filter_chain,
+    load_fund_nav_data,
+    run_backtest,
+)
 from backtest.engine import BacktestConfig
 from backtest.engine import write_reports
 from backtest.strategies.registry import get_strategy_bundle, list_strategy_names
@@ -72,12 +83,24 @@ def main() -> None:
     if args.nav_dir is None:
         raise SystemExit("未找到可用的默认数据目录，请显式传入 --nav-dir")
 
+    allowed_codes: set[str] | None = None
+    filters = get_filter_chain()
+    if filters:
+        candidates = get_available_symbols(args.nav_dir)
+        allowed_codes = apply_filter_chain(candidates, filters)
+        if not allowed_codes:
+            raise SystemExit(
+                "过滤器链将基金池缩减为空，请检查 FUND_BACKTEST_FILTERS 及各过滤器配置"
+            )
+        print(f"[pybroker_backtest] 过滤器链: {len(allowed_codes)} 只基金")
+
     print(f"[pybroker_backtest] 加载数据: {args.nav_dir}")
     data = load_fund_nav_data(
         args.nav_dir,
         max_funds=args.max_funds,
         start_date=args.start_date,
         end_date=args.end_date,
+        allowed_codes=allowed_codes,
     )
     if data.trading_dates:
         print(

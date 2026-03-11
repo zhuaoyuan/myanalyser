@@ -1,37 +1,35 @@
+Bash
 #!/bin/bash
 
-# 1. 确保目标目录存在
+# 1. 确保目录存在
 mkdir -p tmp
 
-# 2. 检查 git 提交记录是否至少有两次
-COMMIT_COUNT=$(git rev-list --count HEAD 2>/dev/null)
-
-if [ -z "$COMMIT_COUNT" ]; then
-    echo "错误: 当前目录似乎不是一个 Git 仓库。"
-    exit 1
-fi
-
-if [ "$COMMIT_COUNT" -lt 2 ]; then
-    echo "提示: 当前分支提交次数少于 2 次，无法进行对比。"
-    # 如果只有一次提交，可以选择输出该提交本身的内容
-    # git show HEAD > tmp/temp_diff.diff
-    exit 1
-fi
-
-# 3. 执行 diff
-# HEAD   代表最新一次 commit (v0311.2)
-# HEAD~1 代表倒数第二次 commit (v0311)
-
-# 获取最新的 Commit ID 短哈希
+# 2. 获取变量
+# 获取最新的 Commit ID (短哈希，前7位)
 COMMIT_ID=$(git rev-parse --short HEAD)
 
-# 生成文件名：temp_diff_a1b2c3d.diff
-git diff HEAD~1..HEAD > "tmp/temp_diff_${COMMIT_ID}.diff"
+# 获取当前时间戳，格式为：YYYYMMDD_HHMM (例如：20260311_0945)
+TIMESTAMP=$(date +"%Y%m%d_%H%M")
 
-# 4. 检查执行结果
+# 定义文件名
+FILENAME="tmp/temp_diff_${COMMIT_ID}_${TIMESTAMP}.diff"
+
+# 3. 检查提交次数
+COMMIT_COUNT=$(git rev-list --count HEAD 2>/dev/null)
+if [ -z "$COMMIT_COUNT" ] || [ "$COMMIT_COUNT" -lt 2 ]; then
+    echo "错误: 提交次数不足（需要至少2次），无法生成 diff。"
+    exit 1
+fi
+
+# 4. 执行 diff 并保存
+git diff HEAD~1..HEAD > "$FILENAME"
+
+# 5. 反馈结果
 if [ $? -eq 0 ]; then
-    echo "成功: 已将 HEAD~1 与 HEAD 的差异保存至 tmp/temp_diff_${COMMIT_ID}.diff。"
+    echo "成功生成文件: $FILENAME"
+    # 打印一下文件大小确认非空
+    ls -lh "$FILENAME"
 else
-    echo "失败: git diff 执行出错。"
+    echo "生成失败。"
     exit 1
 fi

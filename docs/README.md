@@ -40,7 +40,8 @@ myanalyser/
 - `src/compare_adjusted_nav_and_cum_return.py`：复权收益率一致性比对
 - `src/check_trade_day_data_integrity.py`：交易日完整性检查
 - `src/pipeline_scoreboard.py`：评分榜单计算、导出与入库（支持 `--formal-only`、`--skip-sinks`、`--latest-nav-date`、`--clickhouse-write-profile`、`--clickhouse-write-scope`）
-- `src/scoreboard_metrics.py`：评分榜指标计算共享模块（供 pipeline 与 verify 共用）
+- `src/scoreboard_metrics.py`：评分榜指标计算共享模块（供 pipeline 与 verify 共用；与 backtest 共用 `fund_metrics_core` 保证口径一致）
+- `src/fund_metrics_core.py`：基金指标计算核心逻辑（Backtest 与 Scoreboard 共用，统一 252 交易日/年、最近 21 交易日为月等口径）
 - `src/backtest_portfolio.py`：按规则回测组合
 - `src/verify_scoreboard_recalc.py`：榜单指标独立重算核验（从 fund_etl 中间数据重算并与导出榜单比对，支持 `--latest-nav-date`）
 - `src/contracts/pipeline_contracts.py`：关键中间产物契约（列名/类型/非空/唯一键、目录 CSV 文件数量）

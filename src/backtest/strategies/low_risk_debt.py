@@ -7,22 +7,10 @@ from dataclasses import dataclass
 import pandas as pd
 
 from ..data import BacktestData
+from ..filters import MostStableFilterStrategy, PassThroughFilter
 from ..metrics import compute_low_risk_debt_metrics
 from compute_fund_composite_score import compute_composite_score
-from .base import FilterStrategy, PositionStrategy, ScoreStrategy, StrategyBundle
-
-
-@dataclass(frozen=True)
-class PassThroughFilter(FilterStrategy):
-    name: str = "pass_through"
-
-    def filter_symbols(
-        self,
-        data: BacktestData,
-        as_of_date: pd.Timestamp,
-        universe: list[str],
-    ) -> list[str]:
-        return universe
+from .base import PositionStrategy, ScoreStrategy, StrategyBundle
 
 
 @dataclass(frozen=True)
@@ -82,6 +70,16 @@ def build_bundle() -> StrategyBundle:
     return StrategyBundle(
         name="low_risk_debt",
         filter_strategy=PassThroughFilter(),
+        score_strategy=LowRiskDebtScoreStrategy(),
+        position_strategy=EqualWeightPosition(),
+    )
+
+
+def build_bundle_most_stable() -> StrategyBundle:
+    """与 low_risk_debt 相同，但筛选阶段使用最稳健原则（基于目标日前净值动态计算指标）。"""
+    return StrategyBundle(
+        name="low_risk_debt_most_stable",
+        filter_strategy=MostStableFilterStrategy(),
         score_strategy=LowRiskDebtScoreStrategy(),
         position_strategy=EqualWeightPosition(),
     )

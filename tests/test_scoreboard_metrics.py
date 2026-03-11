@@ -77,6 +77,15 @@ class ScoreboardMetricsTest(unittest.TestCase):
         out = window_metrics(df, pd.Timestamp("2024-12-31"), years=3)
         self.assertEqual(out, {})
 
+    def test_window_metrics_years_validation(self) -> None:
+        df = pd.DataFrame([
+            {"净值日期": pd.Timestamp("2024-01-01"), "复权净值": 1.0},
+            {"净值日期": pd.Timestamp("2024-12-31"), "复权净值": 1.1},
+        ])
+        with self.assertRaises(ValueError) as ctx:
+            window_metrics(df, pd.Timestamp("2024-12-31"), years=2)
+        self.assertIn("仅支持 years=1 或 3", str(ctx.exception))
+
     def test_metric_directions_keys(self) -> None:
         self.assertIn("annual_return", METRIC_DIRECTIONS)
         self.assertIn("sharpe_ratio_1y", METRIC_DIRECTIONS)

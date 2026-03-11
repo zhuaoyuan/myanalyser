@@ -20,9 +20,7 @@ from fund_metrics_core import (
 )
 
 RF_ANNUAL = 0.015
-_TRADING_DAYS_1Y = 252
-_TRADING_DAYS_3Y = 756
-_TRADING_DAYS_1M = 21
+_config = WindowConfig()
 
 METRIC_DIRECTIONS = {
     "annual_return": "desc",
@@ -105,7 +103,8 @@ def compute_metrics(nav_df: pd.DataFrame, end_date: pd.Timestamp) -> dict[str, f
     max_drawdown_recovery_days = longest_recovery_days(dates, prices)
 
     # 最近一个月 = 最近 21 个交易日（与 Backtest 一致）
-    prices_1m = prices[-_TRADING_DAYS_1M:] if len(prices) >= _TRADING_DAYS_1M else prices
+    win_1m = _config.trading_days_per_month
+    prices_1m = prices[-win_1m:] if len(prices) >= win_1m else prices
     recent_month_return = return_over_period(prices_1m) if len(prices_1m) >= 2 else None
 
     return {
@@ -124,8 +123,10 @@ def compute_metrics(nav_df: pd.DataFrame, end_date: pd.Timestamp) -> dict[str, f
 
 
 def window_metrics(nav_df: pd.DataFrame, end_date: pd.Timestamp, years: int) -> dict[str, float | None]:
-    """计算近 N 年窗口指标。与 Backtest 重叠的指标使用 fund_metrics_core，窗口为最近 N 个交易日。"""
-    n_rows = _TRADING_DAYS_1Y if years == 1 else _TRADING_DAYS_3Y
+    """计算近 N 年窗口指标。与 Backtest 重叠的指标使用 fund_metrics_core，窗口为最近 N 个交易日。仅支持 years=1 或 3。"""
+    if years not in (1, 3):
+        raise ValueError(f"window_metrics 仅支持 years=1 或 3，当前为 {years}")
+    n_rows = _config.trading_days_per_year if years == 1 else _config.trading_days_per_year * 3
     win = nav_df.tail(n_rows).copy()
     if win.empty or len(win) < 2:
         return {}
@@ -151,8 +152,10 @@ def window_metrics(nav_df: pd.DataFrame, end_date: pd.Timestamp, years: int) -> 
     m_ret = _period_returns(win, "ME")
     q_ret = _period_returns(win, "QE")
 
-    out[f"up_month_ratio_{prefix}"] = core_out.get("近3年上涨月份比例") if years == 3 else _up_ratio(m_ret)
-    out[f"up_week_ratio_{prefix}"] = core_out.get("近1年上涨星期比例") if years == 1 else _up_ratio(w_ret)
+    if years == 1:
+        out["up_month_ratio_1y"] = _up_ratio(m_ret)
+    else:
+        out["up_week_ratio_3y"] = _up_ratio(w_ret)
     out[f"month_return_std_{prefix}"] = _std(m_ret)
     if years == 1:
         out["week_return_std_1y"] = core_out.get("近1年周涨跌幅标准差")

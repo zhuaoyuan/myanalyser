@@ -45,12 +45,16 @@ def cagr(prices: np.ndarray, trading_days_per_year: int) -> float | None:
 
 
 def max_drawdown(prices: np.ndarray) -> float | None:
-    """最大回撤率（负值，如 -0.1 表示 10% 回撤）。"""
+    """最大回撤率（负值，如 -0.1 表示 10% 回撤）。含 NaN 时返回 None。"""
     if len(prices) < 2:
         return None
-    running_max = np.maximum.accumulate(np.asarray(prices, dtype=float))
-    drawdown = prices.astype(float) / running_max - 1.0
-    return float(np.nanmin(drawdown))
+    arr = np.asarray(prices, dtype=float)
+    if np.any(np.isnan(arr)):
+        return None
+    running_max = np.maximum.accumulate(arr)
+    drawdown = arr / running_max - 1.0
+    result = float(np.nanmin(drawdown))
+    return None if np.isnan(result) else result
 
 
 def longest_recovery_days(dates: np.ndarray, prices: np.ndarray) -> float | None:

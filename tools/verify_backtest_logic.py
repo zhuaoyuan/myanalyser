@@ -206,6 +206,7 @@ def main() -> int:
 
     # 3) 从 period_log 抽取首期，核验综合得分与仓位
     period_log = result.period_log
+    score_check = weight_check = {"status": "skip"}
     if not period_log:
         print("[verify] 无调仓记录，跳过后续核验")
     else:

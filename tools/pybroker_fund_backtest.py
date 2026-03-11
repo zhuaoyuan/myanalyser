@@ -72,7 +72,7 @@ def main() -> None:
     parser.add_argument("--end-date", default="2025-12-31", help="回测结束日期 YYYY-MM-DD")
     parser.add_argument("--rebalance", type=int, default=20, help="调仓周期（交易日数）")
     parser.add_argument("--top-n", type=int, default=3, help="持仓基金数量")
-    parser.add_argument("--warmup", type=int, default=252, help="策略预热 bar 数")
+    parser.add_argument("--warmup", type=int, default=243, help="策略预热 bar 数（A 股约 1 年交易日）")
     parser.add_argument("--initial-cash", type=float, default=100_000, help="初始资金")
     parser.add_argument(
         "--output-dir",

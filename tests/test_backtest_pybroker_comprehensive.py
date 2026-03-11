@@ -357,6 +357,31 @@ class TestBoundaryConditions(unittest.TestCase):
         # 多数指标在数据不足时为 None
         self.assertIn("近1年最大回撤率", out)
 
+    def test_metrics_window_insufficient_returns_none(self) -> None:
+        """边界：窗口不足时近N年指标返回 None，避免用短样本冠以「近N年」造成误导。"""
+        cfg = WindowConfig()
+        win_1y, win_3y = cfg.trading_days_per_year, cfg.trading_days_per_year * 3
+
+        def _run(n: int) -> dict:
+            dates = np.arange("2024-01-01", n, dtype="datetime64[D]")
+            prices = np.ones(n) * 1.0
+            return compute_low_risk_debt_metrics(dates, prices, config=cfg)
+
+        # 不足 1 年：近 1 年、近 3 年 均为 None
+        out_short = _run(100)
+        for k in ["近1年最大回撤率", "近3年最大回撤率", "近1年年化收益率", "近3年年化收益率"]:
+            self.assertIsNone(out_short[k], msg=f"{k} 应在窗口不足时为 None")
+
+        # 不足 3 年但够 1 年：近 1 年 有值，近 3 年 为 None
+        out_mid = _run(win_1y + 10)
+        self.assertIsNotNone(out_mid["近1年最大回撤率"], "近1年应有值")
+        self.assertIsNone(out_mid["近3年最大回撤率"], "近3年应为 None")
+
+        # 足够 3 年：均有值
+        out_long = _run(win_3y + 10)
+        self.assertIsNotNone(out_long["近1年最大回撤率"])
+        self.assertIsNotNone(out_long["近3年最大回撤率"])
+
     def test_metrics_zero_price_handled(self) -> None:
         """边界：含 0 或负价格（可能产生 inf/nan）。"""
         dates = np.arange("2020-01-01", "2022-01-01", dtype="datetime64[D]")[:300]

@@ -44,7 +44,7 @@ def _manual_max_drawdown(prices: np.ndarray) -> float | None:
     return float(np.nanmin(drawdown))
 
 
-def _manual_cagr(prices: np.ndarray, trading_days: int = 252) -> float | None:
+def _manual_cagr(prices: np.ndarray, trading_days: int = 243) -> float | None:
     """纯手工实现年化收益率。"""
     if len(prices) < 2:
         return None
@@ -70,11 +70,16 @@ def verify_metrics_node(symbol: str, data: BacktestData, as_of_date: pd.Timestam
     prices = hist["close"].to_numpy(dtype=float)
     # 调用当前代码
     metrics_out = compute_low_risk_debt_metrics(dates, prices)
-    # 手工计算近1年最大回撤、近1年年化
-    win_1y = 252
-    prices_1y = prices[-win_1y:] if len(prices) >= win_1y else prices
-    manual_max_dd = _manual_max_drawdown(prices_1y)
-    manual_ann_ret = _manual_cagr(prices_1y)
+    # 手工计算近1年最大回撤、近1年年化（与 fund_metrics_core 对齐：窗口不足 243 日则返回 None）
+    win_1y = 243
+    has_1y = len(prices) >= win_1y
+    if has_1y:
+        prices_1y = prices[-win_1y:]
+        manual_max_dd = _manual_max_drawdown(prices_1y)
+        manual_ann_ret = _manual_cagr(prices_1y)
+    else:
+        manual_max_dd = None
+        manual_ann_ret = None
     code_max_dd = metrics_out.get("近1年最大回撤率")
     code_ann_ret = metrics_out.get("近1年年化收益率")
     dd_ok = (

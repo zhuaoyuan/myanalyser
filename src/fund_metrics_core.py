@@ -1,10 +1,10 @@
 """基金指标计算核心逻辑（Backtest 与 Scoreboard 共用）。
 
-统一口径：
-- 年化收益：252 交易日/年
-- 最近一个月：最近 21 个交易日
+统一口径（A 股）：
+- 年化收益：243 交易日/年（A 股近 10 年平均约 242–244 天）
+- 最近一个月：最近 20 个交易日（剔除长假干扰后的平均月交易日）
 - 回撤修复天数：从峰顶到收复峰顶的全程时长（含下跌+回升）
-- 周/月：5 日收益近似周、21 日收益近似月
+- 周/月：5 日收益近似周、20 日收益近似月
 """
 
 from __future__ import annotations
@@ -17,9 +17,9 @@ import numpy as np
 
 @dataclass(frozen=True)
 class WindowConfig:
-    trading_days_per_year: int = 252
-    trading_days_per_month: int = 21
-    trading_days_per_week: int = 5
+    trading_days_per_year: int = 243  # A 股近 10 年平均交易日约 242–244 天
+    trading_days_per_month: int = 20  # 剔除长假干扰后的平均月交易日
+    trading_days_per_week: int = 5   # 维持不变，A 股极少周六开盘（即便调休）
 
 
 def safe_slice(arr: np.ndarray, length: int) -> np.ndarray:
@@ -31,7 +31,7 @@ def safe_slice(arr: np.ndarray, length: int) -> np.ndarray:
 
 
 def cagr(prices: np.ndarray, trading_days_per_year: int) -> float | None:
-    """年化收益率，基准 252 交易日/年。"""
+    """年化收益率，基准 243 交易日/年（A 股）。"""
     if len(prices) < 2:
         return None
     start = float(prices[0])
@@ -131,43 +131,47 @@ def compute_low_risk_debt_metrics(
     win_1m = cfg.trading_days_per_month
     win_1w = cfg.trading_days_per_week
 
-    prices_1y = safe_slice(prices, win_1y)
-    dates_1y = safe_slice(dates, win_1y)
-    prices_3y = safe_slice(prices, win_3y)
-    dates_3y = safe_slice(dates, win_3y)
+    # 窗口不足时返回 None，避免用短样本冠以「近N年」造成误导
+    has_1y = len(prices) >= win_1y
+    has_3y = len(prices) >= win_3y
 
-    max_dd_1y = max_drawdown(prices_1y)
-    max_dd_3y = max_drawdown(prices_3y)
-    rec_days_1y = longest_recovery_days(dates_1y, prices_1y)
-    rec_days_3y = longest_recovery_days(dates_3y, prices_3y)
+    prices_1y = safe_slice(prices, win_1y) if has_1y else np.array([], dtype=float)
+    dates_1y = safe_slice(dates, win_1y) if has_1y else np.array([], dtype=dates.dtype)
+    prices_3y = safe_slice(prices, win_3y) if has_3y else np.array([], dtype=float)
+    dates_3y = safe_slice(dates, win_3y) if has_3y else np.array([], dtype=dates.dtype)
 
-    ann_return_1y = cagr(prices_1y, cfg.trading_days_per_year)
-    ann_return_3y = cagr(prices_3y, cfg.trading_days_per_year)
+    max_dd_1y = max_drawdown(prices_1y) if has_1y else None
+    max_dd_3y = max_drawdown(prices_3y) if has_3y else None
+    rec_days_1y = longest_recovery_days(dates_1y, prices_1y) if has_1y else None
+    rec_days_3y = longest_recovery_days(dates_3y, prices_3y) if has_3y else None
+
+    ann_return_1y = cagr(prices_1y, cfg.trading_days_per_year) if has_1y else None
+    ann_return_3y = cagr(prices_3y, cfg.trading_days_per_year) if has_3y else None
 
     calmar_1y = None
-    if ann_return_1y is not None and max_dd_1y is not None and max_dd_1y != 0:
+    if has_1y and ann_return_1y is not None and max_dd_1y is not None and max_dd_1y != 0:
         calmar_1y = ann_return_1y / abs(max_dd_1y)
     calmar_3y = None
-    if ann_return_3y is not None and max_dd_3y is not None and max_dd_3y != 0:
+    if has_3y and ann_return_3y is not None and max_dd_3y is not None and max_dd_3y != 0:
         calmar_3y = ann_return_3y / abs(max_dd_3y)
 
     prices_1m = safe_slice(prices, win_1m)
     ret_1m = return_over_period(prices_1m)
 
-    weekly_returns_1y = rolling_returns(prices_1y, win_1w)
+    weekly_returns_1y = rolling_returns(prices_1y, win_1w) if has_1y else np.array([], dtype=float)
     weekly_up_ratio_1y = float(np.nanmean(weekly_returns_1y > 0)) if len(weekly_returns_1y) > 0 else None
 
-    monthly_returns_3y = rolling_returns(prices_3y, win_1m)
+    monthly_returns_3y = rolling_returns(prices_3y, win_1m) if has_3y else np.array([], dtype=float)
     monthly_up_ratio_3y = float(np.nanmean(monthly_returns_3y > 0)) if len(monthly_returns_3y) > 0 else None
 
     weekly_returns_1y_std = None
-    if len(weekly_returns_1y) > 1:
+    if has_1y and len(weekly_returns_1y) > 1:
         weekly_returns_1y_std = float(np.nanstd(weekly_returns_1y, ddof=1))
 
-    daily_returns_1y = rolling_returns(prices_1y, 1)
-    daily_returns_3y = rolling_returns(prices_3y, 1)
-    sharpe_1y = sharpe_ratio(daily_returns_1y, cfg.trading_days_per_year)
-    sharpe_3y = sharpe_ratio(daily_returns_3y, cfg.trading_days_per_year)
+    daily_returns_1y = rolling_returns(prices_1y, 1) if has_1y else np.array([], dtype=float)
+    daily_returns_3y = rolling_returns(prices_3y, 1) if has_3y else np.array([], dtype=float)
+    sharpe_1y = sharpe_ratio(daily_returns_1y, cfg.trading_days_per_year) if has_1y else None
+    sharpe_3y = sharpe_ratio(daily_returns_3y, cfg.trading_days_per_year) if has_3y else None
 
     return {
         "近1年最大回撤率": max_dd_1y,

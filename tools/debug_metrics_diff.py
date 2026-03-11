@@ -52,11 +52,11 @@ Scoreboard (_max_drawdown_recovery_days):
     print("2. 最近一个月涨跌幅 - 完全不同的时间区间")
     print("=" * 60)
     last_date = df["净值日期"].iloc[-1]
-    # Backtest: 最近 21 个交易日
-    last_21 = df.tail(21)
-    bt_start = last_21["净值日期"].iloc[0]
-    bt_end = last_21["净值日期"].iloc[-1]
-    bt_ret = (last_21["复权净值"].iloc[-1] / last_21["复权净值"].iloc[0] - 1) * 100
+    # Backtest: 最近 20 个交易日（A 股平均月交易日）
+    last_20 = df.tail(20)
+    bt_start = last_20["净值日期"].iloc[0]
+    bt_end = last_20["净值日期"].iloc[-1]
+    bt_ret = (last_20["复权净值"].iloc[-1] / last_20["复权净值"].iloc[0] - 1) * 100
 
     # Scoreboard: 上个完整自然月
     curr_month_start = pd.Timestamp(last_date.year, last_date.month, 1)
@@ -66,7 +66,7 @@ Scoreboard (_max_drawdown_recovery_days):
     sb_ret = (sb_df["复权净值"].iloc[-1] / sb_df["复权净值"].iloc[0] - 1) * 100 if len(sb_df) >= 2 else None
 
     print(f"截止日期: {last_date.date()}")
-    print(f"\nBacktest: 最近 21 个交易日")
+    print(f"\nBacktest: 最近 20 个交易日")
     print(f"  区间: {bt_start.date()} ~ {bt_end.date()}")
     print(f"  涨跌幅: {bt_ret:.2f}%")
     print(f"\nScoreboard: 上个完整自然月")
@@ -74,7 +74,7 @@ Scoreboard (_max_drawdown_recovery_days):
     print(f"  涨跌幅: {sb_ret:.2f}%" if sb_ret is not None else "  无数据")
     print("""
 两段区间可能几乎不重叠！例如截止 2026-02-27 时：
-- Backtest 21 日 ≈ 2026-01-xx ~ 2026-02-27（含 2 月）
+- Backtest 20 日 ≈ 2026-01-xx ~ 2026-02-27（含 2 月）
 - Scoreboard 上月 = 2026-01-01 ~ 2026-01-31（纯 1 月）
 若 1 月涨、2 月跌，则一个为正、一个为负，差异可超过 10%。
 """)
@@ -83,7 +83,7 @@ Scoreboard (_max_drawdown_recovery_days):
     print("=" * 60)
     print("3. 年化收益率 - 指数基准不同导致数值差异")
     print("=" * 60)
-    win = df.tail(252)  # 近 1 年
+    win = df.tail(243)  # 近 1 年（A 股平均交易日）
     if len(win) >= 2:
         start_val = float(win["复权净值"].iloc[0])
         end_val = float(win["复权净值"].iloc[-1])
@@ -92,20 +92,20 @@ Scoreboard (_max_drawdown_recovery_days):
         cal_days = (date_end - date_start).days
         n_obs = len(win) - 1
 
-        # Backtest: years = (n_obs) / 252
-        years_bt = n_obs / 252
+        # Backtest: years = (n_obs) / 243
+        years_bt = n_obs / 243
         cagr_bt = (end_val / start_val) ** (1 / years_bt) - 1 if years_bt > 0 else None
 
         # Scoreboard: 365/days 为指数
         cagr_sb = (end_val / start_val) ** (365.0 / cal_days) - 1 if cal_days > 0 else None
 
-        print(f"近 252 条净值:")
+        print(f"近 243 条净值:")
         print(f"  首日: {date_start.date()}, 末日: {date_end.date()}")
         print(f"  自然日跨度: {cal_days} 天")
         print(f"  观测数(用于收益): n = {n_obs}")
         print()
         print("Backtest 公式:")
-        print(f"  years = n / 252 = {n_obs}/252 = {years_bt:.4f}")
+        print(f"  years = n / 243 = {n_obs}/243 = {years_bt:.4f}")
         print(f"  CAGR = (end/start)^(1/years) - 1 = {cagr_bt*100:.2f}%")
         print()
         print("Scoreboard 公式:")
@@ -113,10 +113,10 @@ Scoreboard (_max_drawdown_recovery_days):
         print(f"  CAGR = (end/start)^(365/days) - 1 = {cagr_sb*100:.2f}%")
         print()
         print("差异原因: 同一段收益")
-        print("  - Backtest 用 252 天/年，相当于 n 个交易日 ≈ n/252 年")
+        print("  - Backtest 用 243 天/年，相当于 n 个交易日 ≈ n/243 年")
         print("  - Scoreboard 用实际自然日，相当于 cal_days 天 ≈ cal_days/365 年")
         print("  当 cal_days ≠ n 时（有周末/节假日），两种 years 不同，CAGR 即不同。")
-        print("  若 n=252 而 cal_days≈365，则 1/years_bt=1, 365/cal_days≈1，接近；")
+        print("  若 n=243 而 cal_days≈365，则 1/years_bt≈1, 365/cal_days≈1，接近；")
         print("  若数据稀疏或窗口不同，差异可达数个百分点。")
     print()
 

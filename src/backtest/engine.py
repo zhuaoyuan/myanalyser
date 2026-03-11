@@ -33,6 +33,65 @@ def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
+# summary.csv name 字段中英文映射
+_CONFIG_NAME_CN = {
+    "strategy": "策略",
+    "start_date": "起始日期",
+    "end_date": "结束日期",
+    "rebalance": "调仓周期",
+    "top_n": "持仓数量",
+    "warmup": "预热天数",
+    "initial_cash": "初始资金",
+    "max_funds": "最大基金数",
+}
+_DATA_NAME_CN = {
+    "symbols": "基金数量",
+    "date_range": "日期范围",
+}
+_METRICS_PYBROKER_NAME_CN = {
+    "trade_count": "交易次数",
+    "initial_market_value": "初始市值",
+    "end_market_value": "期末市值",
+    "total_pnl": "总盈亏",
+    "unrealized_pnl": "未实现盈亏",
+    "total_return_pct": "总收益率",
+    "total_profit": "总盈利",
+    "total_loss": "总亏损",
+    "total_fees": "总手续费",
+    "max_drawdown": "最大回撤额",
+    "max_drawdown_pct": "最大回撤率",
+    "max_drawdown_date": "最大回撤日期",
+    "win_rate": "胜率",
+    "loss_rate": "亏损率",
+    "winning_trades": "盈利交易数",
+    "losing_trades": "亏损交易数",
+    "sharpe": "夏普比率",
+    "sortino": "索提诺比率",
+    "profit_factor": "盈利因子",
+    "avg_return_pct": "平均收益率",
+    "avg_pnl": "平均盈亏",
+    "avg_trade_bars": "平均持仓周期",
+    "avg_profit": "平均盈利",
+    "avg_profit_pct": "平均盈利比例",
+    "avg_winning_trade_bars": "平均盈利持仓周期",
+    "avg_loss": "平均亏损",
+    "avg_loss_pct": "平均亏损比例",
+    "avg_losing_trade_bars": "平均亏损持仓周期",
+    "largest_win": "最大单笔盈利",
+    "largest_win_pct": "最大单笔盈利比例",
+    "largest_win_bars": "最大单笔盈利持仓周期",
+    "largest_loss": "最大单笔亏损",
+    "largest_loss_pct": "最大单笔亏损比例",
+    "largest_loss_bars": "最大单笔亏损持仓周期",
+    "max_wins": "连续盈利次数",
+    "max_losses": "连续亏损次数",
+    "ulcer_index": "溃疡指数",
+    "upi": "溃疡绩效指数",
+    "equity_r2": "净值R方",
+    "std_error": "标准误差",
+}
+
+
 def _build_rebalance_dates(
     trading_dates: list[pd.Timestamp],
     start_date: pd.Timestamp,
@@ -159,6 +218,7 @@ def run_backtest(
         buy_delay=1,
         sell_delay=1,
         round_fill_price=False,
+        bars_per_year=243,  # A 股口径，与 fund_metrics_core 一致
     )
 
     pyb.param("do_rebalance", False)
@@ -226,7 +286,7 @@ def _build_equity_curve(
 
 def _compute_portfolio_metrics_fund_core(
     equity_curve: pd.DataFrame,
-    trading_days_per_year: int = 252,
+    trading_days_per_year: int = 243,
 ) -> dict[str, float | None]:
     """用 fund_metrics_core 口径计算组合指标。"""
     if equity_curve.empty or len(equity_curve) < 2:
@@ -249,9 +309,13 @@ def _write_html_curves(
     equity_curve: pd.DataFrame,
     data: BacktestData,
     period_log: list[dict],
+    orders_df: pd.DataFrame | None = None,
     max_fund_curves: int = 10,
 ) -> Path | None:
-    """生成 Plotly HTML 收益曲线图。"""
+    """生成 Plotly HTML 收益曲线图。
+
+    时间轴起点为回测第一次买入日期；包含三图：组合净值、组合 vs 成分基金、成分基金走势。
+    """
     try:
         import plotly.graph_objects as go
         from plotly.subplots import make_subplots
@@ -264,6 +328,25 @@ def _write_html_curves(
     dates = pd.to_datetime(equity_curve["date"])
     portfolio_cum = equity_curve["cumulative_return"].values
 
+    # 回测第一次买入日期作为时间轴起点
+    first_buy_date: pd.Timestamp | None = None
+    if orders_df is not None and not orders_df.empty and "fill_date" in orders_df.columns:
+        buy_orders = orders_df[orders_df["type"] == "buy"]
+        if not buy_orders.empty:
+            first_buy_date = pd.to_datetime(buy_orders["fill_date"].min())
+    if first_buy_date is None:
+        first_buy_date = dates.min()
+
+    # 截断到 first_buy_date 起，并重新归一化累计收益
+    date_ge = pd.to_datetime(equity_curve["date"]) >= first_buy_date
+    equity_trunc = equity_curve.loc[date_ge].reset_index(drop=True)
+    if len(equity_trunc) < 2:
+        return None
+    dates = pd.to_datetime(equity_trunc["date"])
+    base_equity = float(equity_trunc["equity"].iloc[0])
+    base_equity = base_equity if base_equity > 0 and not math.isnan(base_equity) else 1.0
+    portfolio_cum = (equity_trunc["equity"].values.astype(float) / base_equity - 1.0)
+
     # 收集曾持有的基金，按持有期数排序取前 max_fund_curves
     symbol_counts: dict[str, int] = {}
     for p in period_log:
@@ -271,17 +354,17 @@ def _write_html_curves(
             symbol_counts[s] = symbol_counts.get(s, 0) + 1
     top_symbols = sorted(symbol_counts, key=lambda x: -symbol_counts[x])[:max_fund_curves]
 
-    # 基金累计收益（归一化到首日=1）
-    fund_curves: list[tuple[str, pd.Series]] = []
-    start_ts = dates.min()
+    # 基金累计收益（归一化到 first_buy_date 当日=1）
+    start_ts = first_buy_date
     end_ts = dates.max()
+    fund_curves: list[tuple[str, pd.Series]] = []
     for sym in top_symbols:
         df_sym = data.by_symbol.get(sym)
         if df_sym is None or df_sym.empty:
             continue
         sym_dates = pd.to_datetime(df_sym["date"])
-        mask = (sym_dates >= start_ts) & (sym_dates <= end_ts)
-        win = df_sym.loc[mask].sort_values("date")
+        win_mask = (sym_dates >= start_ts) & (sym_dates <= end_ts)
+        win = df_sym.loc[win_mask].sort_values("date")
         if len(win) < 2:
             continue
         base = float(win["close"].iloc[0])
@@ -292,14 +375,14 @@ def _write_html_curves(
         fund_curves.append((sym, s))
 
     fig = make_subplots(
-        rows=2,
+        rows=3,
         cols=1,
-        subplot_titles=("组合净值曲线", "组合 vs 成分基金收益曲线"),
-        vertical_spacing=0.12,
-        row_heights=[0.45, 0.55],
+        subplot_titles=("组合净值曲线", "组合 vs 成分基金收益曲线", "成分基金走势"),
+        vertical_spacing=0.10,
+        row_heights=[0.35, 0.35, 0.30],
     )
 
-    # 上图：组合累计收益
+    # 图1：组合累计收益
     fig.add_trace(
         go.Scatter(
             x=dates,
@@ -312,7 +395,7 @@ def _write_html_curves(
     )
     fig.update_yaxes(title_text="累计收益率 (%)", row=1, col=1)
 
-    # 下图：组合 + 各基金
+    # 图2：组合 + 各基金
     fig.add_trace(
         go.Scatter(
             x=dates,
@@ -342,8 +425,27 @@ def _write_html_curves(
             col=1,
         )
     fig.update_yaxes(title_text="累计收益率 (%)", row=2, col=1)
+
+    # 图3：成分基金走势（仅基金，样本跨度时间内）
+    for i, (sym, s) in enumerate(fund_curves):
+        s_dates = pd.to_datetime(s.index)
+        s_reindexed = pd.Series(s.values, index=s_dates).reindex(dates, method="ffill").dropna()
+        if s_reindexed.empty:
+            continue
+        fig.add_trace(
+            go.Scatter(
+                x=s_reindexed.index,
+                y=s_reindexed.values * 100,
+                name=sym,
+                line=dict(color=colors[i % len(colors)], width=1.5),
+            ),
+            row=3,
+            col=1,
+        )
+    fig.update_yaxes(title_text="累计收益率 (%)", row=3, col=1)
+
     fig.update_layout(
-        height=700,
+        height=850,
         title_text="回测收益曲线",
         showlegend=True,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
@@ -430,15 +532,16 @@ def write_reports(
     period_log = backtest_result.period_log
     run_config = run_config or {}
 
-    # 运行参数写入 summary
+    # 运行参数写入 summary（name 统一为中文）
     summary_rows = []
     for k, v in run_config.items():
-        summary_rows.append({"section": "config", "name": str(k), "value": v if v is None else str(v)})
-    summary_rows.append({"section": "data", "name": "symbols", "value": len(data.by_symbol)})
+        name_cn = _CONFIG_NAME_CN.get(str(k), str(k))
+        summary_rows.append({"section": "config", "name": name_cn, "value": v if v is None else str(v)})
+    summary_rows.append({"section": "data", "name": _DATA_NAME_CN["symbols"], "value": len(data.by_symbol)})
     if data.trading_dates:
         summary_rows.append({
             "section": "data",
-            "name": "date_range",
+            "name": _DATA_NAME_CN["date_range"],
             "value": f"{data.trading_dates[0].date()} ~ {data.trading_dates[-1].date()}",
         })
 
@@ -477,8 +580,10 @@ def write_reports(
     metrics_df = getattr(result, "metrics_df", None)
     if metrics_df is not None and not metrics_df.empty:
         for _, row in metrics_df.iterrows():
+            name_en = row.get("name")
+            name_cn = _METRICS_PYBROKER_NAME_CN.get(str(name_en), name_en) if name_en else name_en
             summary_rows.append(
-                {"section": "metrics_pybroker", "name": row.get("name"), "value": row.get("value")}
+                {"section": "metrics_pybroker", "name": name_cn, "value": row.get("value")}
             )
 
     summary_df = pd.DataFrame(summary_rows)
@@ -582,7 +687,9 @@ def write_reports(
     ).to_csv(positions_path, index=False, encoding="utf-8-sig")
 
     # HTML 曲线
-    curves_path = _write_html_curves(output_dir, equity_curve, data, period_log)
+    curves_path = _write_html_curves(
+        output_dir, equity_curve, data, period_log, orders_df=orders_df
+    )
 
     # Markdown 报告
     md_path = _render_markdown_report(

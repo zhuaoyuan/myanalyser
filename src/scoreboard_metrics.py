@@ -102,7 +102,7 @@ def compute_metrics(nav_df: pd.DataFrame, end_date: pd.Timestamp) -> dict[str, f
     max_dd = _core_max_drawdown(prices)
     max_drawdown_recovery_days = longest_recovery_days(dates, prices)
 
-    # 最近一个月 = 最近 21 个交易日（与 Backtest 一致）
+    # 最近一个月 = 最近 20 个交易日（与 Backtest 一致，A 股平均月交易日）
     win_1m = _config.trading_days_per_month
     prices_1m = prices[-win_1m:] if len(prices) >= win_1m else prices
     recent_month_return = return_over_period(prices_1m) if len(prices_1m) >= 2 else None

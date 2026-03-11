@@ -11,7 +11,7 @@ COMMIT_ID=$(git rev-parse --short HEAD)
 TIMESTAMP=$(date +"%Y%m%d_%H%M")
 
 # 定义文件名
-FILENAME="tmp/temp_diff_${COMMIT_ID}_${TIMESTAMP}.diff"
+FILENAME="tmp/temp_diff_${TIMESTAMP}_${COMMIT_ID}.diff"
 
 # 3. 检查提交次数
 COMMIT_COUNT=$(git rev-list --count HEAD 2>/dev/null)

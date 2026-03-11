@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from filter_score.filters.most_stable import filter_one
+from fund_metrics_core import WindowConfig
 from scoreboard_metrics import window_metrics
 
 from ..data import BacktestData
@@ -22,16 +23,24 @@ def _compute_most_stable_metrics(
     df_hist: pd.DataFrame,
     as_of_date: pd.Timestamp,
 ) -> dict[str, float | None]:
-    """从净值历史计算 most_stable 所需指标（中文列名，百分比需 *100）。"""
+    """从净值历史计算 most_stable 所需指标（中文列名，百分比需 *100）。
+
+    调用方应保证 df_hist 已过滤为 date <= as_of_date。
+    """
     if df_hist.empty or len(df_hist) < 2:
         return {}
 
     nav_df = df_hist.rename(columns={"date": "净值日期", "close": "复权净值"})[
         ["净值日期", "复权净值"]
     ].copy()
-    nav_df = nav_df[nav_df["净值日期"] <= as_of_date].sort_values("净值日期")
+    nav_df = nav_df.sort_values("净值日期")
 
     if nav_df.empty or len(nav_df) < 2:
+        return {}
+
+    cfg = WindowConfig()
+    min_3y = cfg.trading_days_per_year * 3
+    if len(nav_df) < min_3y:
         return {}
 
     dates = nav_df["净值日期"].to_numpy(dtype="datetime64[D]")
@@ -78,18 +87,20 @@ class MostStableFilterStrategy(FilterStrategy):
         universe: list[str],
     ) -> list[str]:
         result: list[str] = []
-        as_of_date = pd.Timestamp(as_of_date)
+        as_of_ts = pd.Timestamp(as_of_date)
+
+        # TODO: 若 universe > 100，可考虑向量化或批量计算以降低性能瓶颈
 
         for symbol in universe:
             df_symbol = data.by_symbol.get(symbol)
             if df_symbol is None or df_symbol.empty:
                 continue
-            mask = df_symbol["date"] <= as_of_date
+            mask = df_symbol["date"] <= as_of_ts
             df_hist = df_symbol.loc[mask]
             if df_hist.empty:
                 continue
 
-            row = _compute_most_stable_metrics(df_hist, as_of_date)
+            row = _compute_most_stable_metrics(df_hist, as_of_ts)
             if not row:
                 continue
             is_filtered, _ = filter_one(row)

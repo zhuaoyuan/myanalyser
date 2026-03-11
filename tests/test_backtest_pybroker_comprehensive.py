@@ -193,26 +193,55 @@ class TestNormalScenarios(unittest.TestCase):
             else:
                 os.environ.pop(MAX_FUNDS_ENV, None)
 
-    def test_most_stable_filter_strategy_applies_rules_from_nav(self) -> None:
-        """正常：MostStableFilterStrategy 基于目标日前净值动态计算指标并应用最稳健原则。"""
+    def test_most_stable_filter_symbols_iterates_and_respects_filter_one(self) -> None:
+        """MostStableFilterStrategy 正确遍历 universe 并遵从 filter_one 判定。"""
         from unittest.mock import patch
 
         from myanalyser.src.backtest.filters import MostStableFilterStrategy
 
-        data = _make_backtest_data(n_symbols=2, n_days=800, trend_up=0.12)
+        QUALIFIED = {
+            "近3年年化收益率": 5.0, "近1年年化收益率": 4.0,
+            "近3年上涨季度比例": 85, "近3年上涨月份比例": 75, "近3年月涨跌幅标准差": 1.0,
+            "近1年夏普比率": 1.5, "近3年夏普比率": 1.2, "近1年卡玛比率": 2.0, "近3年卡玛比率": 1.5,
+        }
+        UNQUALIFIED = dict(QUALIFIED, 近3年年化收益率=2.5)
 
-        with patch("myanalyser.src.backtest.filters.most_stable_strategy._compute_most_stable_metrics", side_effect=lambda df, d: (
-            {"近3年年化收益率": 5.0, "近1年年化收益率": 4.0, "近3年上涨季度比例": 85, "近3年上涨月份比例": 75, "近3年月涨跌幅标准差": 1.0, "近1年夏普比率": 1.5, "近3年夏普比率": 1.2, "近1年卡玛比率": 2.0, "近3年卡玛比率": 1.5}
-            if df["close"].iloc[-1] > 1.15
-            else {"近3年年化收益率": 2.5, "近1年年化收益率": 4.0, "近3年上涨季度比例": 85, "近3年上涨月份比例": 75, "近3年月涨跌幅标准差": 1.0, "近1年夏普比率": 1.5, "近3年夏普比率": 1.2, "近1年卡玛比率": 2.0, "近3年卡玛比率": 1.5}
-        )):
+        def _mock_by_symbol(symbol_order: list[str]):
+            idx = [0]
+
+            def _side_effect(df, _as_of):
+                sym = symbol_order[idx[0] % len(symbol_order)]
+                idx[0] += 1
+                return QUALIFIED if sym == "000001" else UNQUALIFIED
+
+            return _side_effect
+
+        data = _make_backtest_data(n_symbols=2, n_days=800, trend_up=0.12)
+        syms = sorted(data.by_symbol.keys())
+
+        with patch("myanalyser.src.backtest.filters.most_stable_strategy._compute_most_stable_metrics", side_effect=_mock_by_symbol(syms)):
             f = MostStableFilterStrategy()
-            as_of = data.trading_dates[-1]
-            universe = sorted(data.by_symbol.keys())
-            out = f.filter_symbols(data, as_of, universe)
-        # 000001 通过（trend 更高，mock 返回合格），000000 不通过（mock 返回近3年年化≤3）
+            out = f.filter_symbols(data, data.trading_dates[-1], syms)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0], "000001")
+
+    def test_most_stable_compute_metrics_integration(self) -> None:
+        """_compute_most_stable_metrics 与 filter_one 对接：真实指标计算输出可被正确消费。"""
+        from myanalyser.src.backtest.filters.most_stable_strategy import _compute_most_stable_metrics
+        from myanalyser.src.filter_score.filters.most_stable import filter_one
+
+        data = _make_backtest_data(n_symbols=2, n_days=800, trend_up=0.12)
+        df = data.by_symbol["000001"]
+        as_of = data.trading_dates[-1]
+
+        row = _compute_most_stable_metrics(df, as_of)
+        self.assertGreater(len(row), 0)
+        for k in ["近3年年化收益率", "近1年年化收益率", "近1年夏普比率", "近3年卡玛比率"]:
+            self.assertIn(k, row)
+
+        is_filtered, reason = filter_one(row)
+        self.assertIsInstance(is_filtered, bool)
+        self.assertIsInstance(reason, str)
 
     def test_load_fund_nav_data_with_allowed_codes(self) -> None:
         """正常：allowed_codes 限制加载的基金集合。"""

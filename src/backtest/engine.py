@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import math
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -194,14 +196,16 @@ def _build_equity_curve(
     trading_dates: list[pd.Timestamp],
     initial_cash: float,
 ) -> pd.DataFrame:
-    """从 portfolio 构建每日净值曲线。"""
+    """从 portfolio 构建每日净值曲线。仅支持 DatetimeIndex，非 DatetimeIndex 会尝试归一化。"""
     eq_aligned = pd.Series(dtype=float)
     if portfolio_df is not None and not portfolio_df.empty:
         col = "total_equity" if "total_equity" in portfolio_df.columns else "market_value"
         if col in portfolio_df.columns:
-            eq = portfolio_df[col]
-            if isinstance(portfolio_df.index, pd.DatetimeIndex):
-                eq = eq[~eq.index.duplicated(keep="last")].sort_index().dropna()
+            pf = portfolio_df.copy()
+            if not isinstance(pf.index, pd.DatetimeIndex):
+                pf.index = pd.to_datetime(pf.index, errors="coerce")
+            if isinstance(pf.index, pd.DatetimeIndex):
+                eq = pf[col][~pf.index.duplicated(keep="last")].sort_index().dropna()
                 eq_aligned = eq
     if eq_aligned.empty and trading_dates:
         eq_aligned = pd.Series(
@@ -210,7 +214,8 @@ def _build_equity_curve(
         )
     if eq_aligned.empty:
         return pd.DataFrame(columns=["date", "equity", "cumulative_return"])
-    base = float(eq_aligned.iloc[0]) if eq_aligned.iloc[0] > 0 else 1.0
+    first_val = float(eq_aligned.iloc[0])
+    base = first_val if first_val > 0 and not math.isnan(first_val) else 1.0
     cum_ret = eq_aligned / base - 1.0
     return pd.DataFrame({
         "date": eq_aligned.index,
@@ -228,7 +233,8 @@ def _compute_portfolio_metrics_fund_core(
         return {}
     try:
         from fund_metrics_core import compute_low_risk_debt_metrics, WindowConfig
-    except ModuleNotFoundError:
+    except ModuleNotFoundError as e:
+        warnings.warn(f"fund_metrics_core 未安装，跳过组合指标计算: {e}")
         return {}
 
     dates = equity_curve["date"].to_numpy(dtype="datetime64[D]")
@@ -263,7 +269,7 @@ def _write_html_curves(
     for p in period_log:
         for s in p.get("selected_symbols", []):
             symbol_counts[s] = symbol_counts.get(s, 0) + 1
-    top_symbols = sorted(symbol_counts.keys(), key=lambda x: -symbol_counts.get(x, 0))[:max_fund_curves]
+    top_symbols = sorted(symbol_counts, key=lambda x: -symbol_counts[x])[:max_fund_curves]
 
     # 基金累计收益（归一化到首日=1）
     fund_curves: list[tuple[str, pd.Series]] = []
@@ -352,7 +358,7 @@ def _render_markdown_report(
     summary_rows: list[dict],
     detail_df: pd.DataFrame,
     run_config: dict[str, Any],
-    equity_curve_path: Path | None,
+    curves_html_path: Path | None,
 ) -> Path:
     """生成 Markdown 报告。"""
     lines = [
@@ -402,8 +408,8 @@ def _render_markdown_report(
     for f in ["summary.csv", "period_detail.csv", "equity_curve.csv", "orders.csv", "positions_flat.csv"]:
         p = output_dir / f
         lines.append(f"- {f}")
-    if equity_curve_path and equity_curve_path.exists():
-        lines.append(f"- [backtest_curves.html]({equity_curve_path.name})（收益曲线可视化）")
+    if curves_html_path and curves_html_path.exists():
+        lines.append(f"- [backtest_curves.html]({curves_html_path.name})（收益曲线可视化）")
     lines.append("")
 
     report_path = output_dir / "backtest_report.md"
@@ -565,13 +571,13 @@ def write_reports(
         "orders_buy", "orders_sell",
         "portfolio_cash", "portfolio_market_value", "portfolio_total_equity",
     ]
-    detail_df = pd.DataFrame(detail_rows, columns=detail_columns if not detail_rows else None)
+    detail_df = pd.DataFrame(detail_rows, columns=detail_columns)
     detail_path = output_dir / "period_detail.csv"
     detail_df.to_csv(detail_path, index=False, encoding="utf-8-sig")
 
     positions_path = output_dir / "positions_flat.csv"
     pd.DataFrame(
-        position_flat_rows if position_flat_rows else [],
+        position_flat_rows,
         columns=["stat_date", "symbol", "weight", "rank"],
     ).to_csv(positions_path, index=False, encoding="utf-8-sig")
 

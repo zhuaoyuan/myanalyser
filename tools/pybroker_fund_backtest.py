@@ -143,7 +143,8 @@ def main() -> None:
         initial_cash=config.initial_cash,
     )
 
-    # 控制台核心指标摘要
+    # 控制台核心指标摘要（收益率/回撤用 %，夏普/卡玛为无量纲比值用小数）
+    RATIO_METRICS = {"近1年夏普比率", "近3年夏普比率", "近1年卡玛比率", "近3年卡玛比率"}
     summary_df = pd.read_csv(reports["summary"], encoding="utf-8-sig")
     metrics = summary_df[summary_df["section"] == "metrics"]
     if not metrics.empty:
@@ -156,7 +157,12 @@ def main() -> None:
                 if val is not None and str(val) != "nan":
                     try:
                         fval = float(val)
-                        parts.append(f"{name}: {fval:.2%}" if "率" in name or "收益" in name else f"{name}: {fval:.2f}")
+                        if name in RATIO_METRICS:
+                            parts.append(f"{name}: {fval:.2f}")
+                        elif "收益" in name or "回撤" in name:
+                            parts.append(f"{name}: {fval:.2%}")
+                        else:
+                            parts.append(f"{name}: {fval:.2f}")
                     except (TypeError, ValueError):
                         parts.append(f"{name}: {val}")
         if parts:

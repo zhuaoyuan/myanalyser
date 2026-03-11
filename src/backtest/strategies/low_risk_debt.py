@@ -8,7 +8,7 @@ import pandas as pd
 
 from ..data import BacktestData
 from ..metrics import compute_low_risk_debt_metrics
-from ...compute_fund_composite_score import compute_composite_score
+from compute_fund_composite_score import compute_composite_score
 from .base import FilterStrategy, PositionStrategy, ScoreStrategy, StrategyBundle
 
 

@@ -18,6 +18,9 @@ from pybroker import ExecContext, Strategy, StrategyConfig
 from .data import BacktestData
 from .strategies.base import FilterStrategy, StrategyBundle
 
+# 低于此值串行，避免线程池创建与切换开销；高于此值并行以加速（与各 filter 典型计算量及线程成本相关）
+UNIVERSE_PARALLEL_THRESHOLD = 100
+
 
 def _split_chunks(lst: list[str], n: int) -> list[list[str]]:
     """将列表均分至最多 n 份。"""
@@ -33,13 +36,13 @@ def _filter_symbols_with_parallel(
     as_of_ts: pd.Timestamp,
     universe: list[str],
     *,
-    threshold: int = 100,
+    threshold: int = UNIVERSE_PARALLEL_THRESHOLD,
     max_workers: int | None = None,
 ) -> list[str]:
     """通用：universe 大于阈值时并行调用 filter_symbols，否则串行。"""
     if len(universe) <= threshold:
         return filter_strategy.filter_symbols(data, as_of_ts, universe)
-    n = max_workers or min(32, (os.cpu_count() or 1) + 4)
+    n = max_workers or min(32, os.cpu_count() or 4)
     chunks = _split_chunks(universe, n)
     result: list[str] = []
     with ThreadPoolExecutor(max_workers=n) as ex:
@@ -48,7 +51,13 @@ def _filter_symbols_with_parallel(
             for ch in chunks
         }
         for future in as_completed(futures):
-            result.extend(future.result())
+            try:
+                result.extend(future.result())
+            except Exception as e:
+                chunk = futures.get(future, [])
+                raise RuntimeError(
+                    f"filter_symbols failed for chunk (len={len(chunk)}): {chunk[:5]}{'...' if len(chunk) > 5 else ''}"
+                ) from e
     return sorted(result)
 
 

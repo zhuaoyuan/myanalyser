@@ -11,6 +11,8 @@ from ..data import BacktestData
 
 
 class FilterStrategy(Protocol):
+    """筛选策略。filter_symbols 须为无状态/线程安全：并行时可能被多线程并发调用。"""
+
     name: str
 
     def filter_symbols(

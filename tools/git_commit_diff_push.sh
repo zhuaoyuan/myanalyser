@@ -3,13 +3,13 @@
 # 1. 获取当前月日 (例如 0311)
 DATE=$(date +%m%d)
 
-# 2. 获取当天已经存在的、符合格式的 tag 或提交记录数量，以此生成序列号
-# 这里我们通过 git log 统计当天生成的 vMMDD 开头的提交信息数量
-SEQ=$(git log --oneline --since="midnight" | grep -c "v$DATE" || echo 0)
+# 2. 获取当天提交数量 (确保只抓取以 vMMDD 开头的 commit)
+# 加上 10# 前缀可以强制 Bash 按十进制解析
+SEQ_RAW=$(git log --oneline --since="midnight" --grep="v$DATE" | wc -l)
 
-# 3. 序列号自增 1 (如果是当天第一次提交，SEQ 为 0+1=1)
-# 使用 printf 确保序号是两位数，例如 01, 10
-NEXT_SEQ=$(printf "%02d" $((SEQ + 1)))
+# 3. 序列号自增 1
+# 10#$SEQ_RAW 的意思是：无论 SEQ_RAW 是什么，都按 10 进制处理
+NEXT_SEQ=$(printf "%02d" $((10#$SEQ_RAW + 1)))
 
 # 4. 拼接最终的 Commit Message
 COMMIT_MSG="v${DATE}.${NEXT_SEQ}"

@@ -88,9 +88,6 @@ class MostStableFilterStrategy(FilterStrategy):
     ) -> list[str]:
         result: list[str] = []
         as_of_ts = pd.Timestamp(as_of_date)
-
-        # TODO: 若 universe > 100，可考虑向量化或批量计算以降低性能瓶颈
-
         for symbol in universe:
             df_symbol = data.by_symbol.get(symbol)
             if df_symbol is None or df_symbol.empty:
@@ -99,12 +96,10 @@ class MostStableFilterStrategy(FilterStrategy):
             df_hist = df_symbol.loc[mask]
             if df_hist.empty:
                 continue
-
             row = _compute_most_stable_metrics(df_hist, as_of_ts)
             if not row:
                 continue
             is_filtered, _ = filter_one(row)
             if not is_filtered:
                 result.append(symbol)
-
         return result

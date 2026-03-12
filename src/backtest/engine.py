@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -14,7 +16,40 @@ import pybroker as pyb
 from pybroker import ExecContext, Strategy, StrategyConfig
 
 from .data import BacktestData
-from .strategies.base import StrategyBundle
+from .strategies.base import FilterStrategy, StrategyBundle
+
+
+def _split_chunks(lst: list[str], n: int) -> list[list[str]]:
+    """将列表均分至最多 n 份。"""
+    if n <= 1:
+        return [lst]
+    size = max(1, (len(lst) + n - 1) // n)
+    return [lst[i : i + size] for i in range(0, len(lst), size)]
+
+
+def _filter_symbols_with_parallel(
+    filter_strategy: FilterStrategy,
+    data: BacktestData,
+    as_of_ts: pd.Timestamp,
+    universe: list[str],
+    *,
+    threshold: int = 100,
+    max_workers: int | None = None,
+) -> list[str]:
+    """通用：universe 大于阈值时并行调用 filter_symbols，否则串行。"""
+    if len(universe) <= threshold:
+        return filter_strategy.filter_symbols(data, as_of_ts, universe)
+    n = max_workers or min(32, (os.cpu_count() or 1) + 4)
+    chunks = _split_chunks(universe, n)
+    result: list[str] = []
+    with ThreadPoolExecutor(max_workers=n) as ex:
+        futures = {
+            ex.submit(filter_strategy.filter_symbols, data, as_of_ts, ch): ch
+            for ch in chunks
+        }
+        for future in as_completed(futures):
+            result.extend(future.result())
+    return sorted(result)
 
 
 @dataclass(frozen=True)
@@ -153,8 +188,8 @@ def run_backtest(
             return
 
         universe = symbols
-        candidates = bundle.filter_strategy.filter_symbols(
-            data, current_ts, universe
+        candidates = _filter_symbols_with_parallel(
+            bundle.filter_strategy, data, current_ts, universe
         )
         scored = bundle.score_strategy.score(
             data, current_ts, candidates

@@ -111,6 +111,177 @@ def sharpe_ratio(daily_returns: np.ndarray, trading_days_per_year: int) -> float
     return mean / std * math.sqrt(trading_days_per_year)
 
 
+def sortino_ratio(daily_returns: np.ndarray, trading_days_per_year: int) -> float | None:
+    """索提诺比率，仅用下行波动率年化。"""
+    if len(daily_returns) < 2:
+        return None
+    downside = daily_returns[daily_returns < 0]
+    if len(downside) < 2:
+        return None  # 无负收益或样本不足时无法定义下行波动
+    std_down = float(np.nanstd(downside, ddof=1))
+    if std_down <= 0:
+        return None
+    mean = float(np.nanmean(daily_returns))
+    return mean / std_down * math.sqrt(trading_days_per_year)
+
+
+def profit_factor(prices: np.ndarray) -> float | None:
+    """盈利因子：毛利/毛损（基于净值变化）。"""
+    if len(prices) < 2:
+        return None
+    changes = np.diff(np.asarray(prices, dtype=float))
+    wins = np.sum(changes[changes > 0])
+    losses = np.sum(changes[changes < 0])
+    if losses >= 0:
+        return None
+    eps = 1e-10
+    return (wins + eps) / (-losses + eps)
+
+
+def ulcer_index(prices: np.ndarray) -> float | None:
+    """溃疡指数：回撤百分比的均方根。"""
+    if len(prices) < 2:
+        return None
+    arr = np.asarray(prices, dtype=float)
+    if np.any(arr <= 0):
+        return None
+    running_max = np.maximum.accumulate(arr)
+    drawdown_pct = (arr / running_max - 1.0) * 100
+    return float(np.sqrt(np.nanmean(drawdown_pct**2)))
+
+
+def ulcer_performance_index(
+    prices: np.ndarray,
+    trading_days_per_year: int,
+    risk_free_rate: float = 0.0,
+) -> float | None:
+    """溃疡绩效指数 UPI = (年化收益率 - 无风险利率) / 溃疡指数。"""
+    ui = ulcer_index(prices)
+    if ui is None or ui <= 0:
+        return None
+    ann_ret = cagr(prices, trading_days_per_year)
+    if ann_ret is None:
+        return None
+    return (ann_ret - risk_free_rate) / ui
+
+
+def equity_r_squared(prices: np.ndarray) -> float | None:
+    """净值序列相对于线性趋势的 R 方。"""
+    if len(prices) < 3:
+        return None
+    y = np.asarray(prices, dtype=float)
+    n = len(y)
+    x = np.arange(n, dtype=float)
+    x_mean, y_mean = x.mean(), y.mean()
+    ss_tot = np.sum((y - y_mean) ** 2)
+    if ss_tot <= 0:
+        return None
+    b = np.sum((x - x_mean) * (y - y_mean)) / (np.sum((x - x_mean) ** 2) + 1e-20)
+    a = y_mean - b * x_mean
+    ss_res = np.sum((y - (a + b * x)) ** 2)
+    return float(1 - ss_res / ss_tot)
+
+
+def regression_std_error(prices: np.ndarray) -> float | None:
+    """净值相对线性趋势的残差标准误差。"""
+    if len(prices) < 3:
+        return None
+    y = np.asarray(prices, dtype=float)
+    n = len(y)
+    x = np.arange(n, dtype=float)
+    x_mean, y_mean = x.mean(), y.mean()
+    b = np.sum((x - x_mean) * (y - y_mean)) / (np.sum((x - x_mean) ** 2) + 1e-20)
+    a = y_mean - b * x_mean
+    ss_res = np.sum((y - (a + b * x)) ** 2)
+    return float(np.sqrt(ss_res / (n - 2)))
+
+
+def annual_volatility(daily_returns: np.ndarray, trading_days_per_year: int) -> float | None:
+    """年化波动率（小数形式，如 0.1 表示 10%）。"""
+    if len(daily_returns) < 2:
+        return None
+    std = float(np.nanstd(daily_returns, ddof=1))
+    return std * math.sqrt(trading_days_per_year)
+
+
+# metrics_holding 产出指标（持仓期间全样本）
+HOLDING_METRIC_NAMES = (
+    "年化收益率",
+    "夏普比率",
+    "索提诺比率",
+    "卡玛比率",
+    "盈利因子",
+    "溃疡指数",
+    "溃疡绩效指数",
+    "净值R方",
+    "标准误差",
+    "上涨星期比例",
+    "上涨月份比例",
+    "最大回撤率",
+    "最长回撤修复天数",
+    "年化波动率",
+)
+
+
+def compute_holding_period_metrics(
+    dates: np.ndarray,
+    prices: np.ndarray,
+    config: WindowConfig | None = None,
+) -> dict[str, float | None]:
+    """计算持仓期间全样本指标（无 1y/3y 窗口），用于 metrics_holding。
+
+    Args:
+        dates: np.datetime64[D] 数组。
+        prices: float 数组。
+    """
+    cfg = config or WindowConfig()
+    prices = np.asarray(prices, dtype=float)
+    dates = np.asarray(dates)
+
+    if len(prices) < 2:
+        return {k: None for k in HOLDING_METRIC_NAMES}
+
+    win_1m = cfg.trading_days_per_month
+    win_1w = cfg.trading_days_per_week
+    daily_returns = rolling_returns(prices, 1)
+    weekly_returns = rolling_returns(prices, win_1w)
+    monthly_returns = rolling_returns(prices, win_1m)
+
+    ann_return = cagr(prices, cfg.trading_days_per_year)
+    sharpe = sharpe_ratio(daily_returns, cfg.trading_days_per_year)
+    sortino = sortino_ratio(daily_returns, cfg.trading_days_per_year)
+    max_dd = max_drawdown(prices)
+    calmar = None
+    if ann_return is not None and max_dd is not None and max_dd != 0:
+        calmar = ann_return / abs(max_dd)
+    pf = profit_factor(prices)
+    ui = ulcer_index(prices)
+    upi = ulcer_performance_index(prices, cfg.trading_days_per_year)
+    r2 = equity_r_squared(prices)
+    std_err = regression_std_error(prices)
+    weekly_up = float(np.nanmean(weekly_returns > 0)) if len(weekly_returns) > 0 else None
+    monthly_up = float(np.nanmean(monthly_returns > 0)) if len(monthly_returns) > 0 else None
+    rec_days = longest_recovery_days(dates, prices)
+    ann_vol = annual_volatility(daily_returns, cfg.trading_days_per_year)
+
+    return {
+        "年化收益率": ann_return,
+        "夏普比率": sharpe,
+        "索提诺比率": sortino,
+        "卡玛比率": calmar,
+        "盈利因子": pf,
+        "溃疡指数": ui,
+        "溃疡绩效指数": upi,
+        "净值R方": r2,
+        "标准误差": std_err,
+        "上涨星期比例": weekly_up,
+        "上涨月份比例": monthly_up,
+        "最大回撤率": max_dd,
+        "最长回撤修复天数": rec_days,
+        "年化波动率": ann_vol,
+    }
+
+
 def compute_low_risk_debt_metrics(
     dates: np.ndarray,
     prices: np.ndarray,

@@ -336,6 +336,20 @@ def _build_equity_curve(
     }).reset_index(drop=True)
 
 
+def _get_first_buy_date(orders_df: pd.DataFrame) -> pd.Timestamp | None:
+    """从 orders 中取第一次买入的成交日。"""
+    if orders_df is None or orders_df.empty:
+        return None
+    col = "fill_date" if "fill_date" in orders_df.columns else "date"
+    if col not in orders_df.columns:
+        return None
+    buys = orders_df[orders_df["type"] == "buy"] if "type" in orders_df.columns else orders_df
+    if buys.empty:
+        return None
+    first = pd.to_datetime(buys[col].min(), errors="coerce")
+    return first if pd.notna(first) else None
+
+
 def _compute_portfolio_metrics_fund_core(
     equity_curve: pd.DataFrame,
     trading_days_per_year: int = 243,
@@ -353,6 +367,37 @@ def _compute_portfolio_metrics_fund_core(
     prices = equity_curve["equity"].to_numpy(dtype=float)
     cfg = WindowConfig(trading_days_per_year=trading_days_per_year)
     out = compute_low_risk_debt_metrics(dates, prices, config=cfg)
+    return {k: (round(v, 6) if isinstance(v, float) else v) for k, v in out.items()}
+
+
+def _compute_portfolio_metrics_holding(
+    equity_curve: pd.DataFrame,
+    orders_df: pd.DataFrame,
+    trading_days_per_year: int = 243,
+) -> dict[str, float | None]:
+    """持仓期间指标（首次买入 → 结束），无买入时返回空。"""
+    first_buy = _get_first_buy_date(orders_df)
+    if first_buy is None or equity_curve.empty or len(equity_curve) < 2:
+        return {}
+    try:
+        from fund_metrics_core import compute_holding_period_metrics, WindowConfig
+    except ModuleNotFoundError as e:
+        warnings.warn(f"fund_metrics_core 未安装，跳过 metrics_holding: {e}")
+        return {}
+
+    first_buy = pd.Timestamp(first_buy).normalize()
+    dates = pd.to_datetime(equity_curve["date"], errors="coerce")
+    mask = dates >= first_buy
+    if not mask.any():
+        return {}
+    curve_holding = equity_curve.loc[mask].reset_index(drop=True)
+    if len(curve_holding) < 2:
+        return {}
+
+    dates_arr = curve_holding["date"].to_numpy(dtype="datetime64[D]")
+    prices = curve_holding["equity"].to_numpy(dtype=float)
+    cfg = WindowConfig(trading_days_per_year=trading_days_per_year)
+    out = compute_holding_period_metrics(dates_arr, prices, config=cfg)
     return {k: (round(v, 6) if isinstance(v, float) else v) for k, v in out.items()}
 
 
@@ -631,6 +676,14 @@ def write_reports(
     for name, val in metrics_core.items():
         if val is not None:
             summary_rows.append({"section": "metrics", "name": name, "value": val})
+
+    # metrics_holding：持仓期间指标（首次买入 → 结束），无买入时留空
+    metrics_holding = _compute_portfolio_metrics_holding(
+        equity_curve, orders_df, trading_days_per_year=243
+    )
+    for name, val in metrics_holding.items():
+        if val is not None:
+            summary_rows.append({"section": "metrics_holding", "name": name, "value": val})
 
     # PyBroker 原生 metrics_df
     metrics_df = getattr(result, "metrics_df", None)

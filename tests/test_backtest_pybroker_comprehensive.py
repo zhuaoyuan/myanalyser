@@ -333,6 +333,19 @@ class TestNormalScenarios(unittest.TestCase):
             self.assertTrue(paths["report_md"].exists())
             summary_df = pd.read_csv(paths["summary"], encoding="utf-8-sig")
             self.assertFalse(summary_df.empty)
+            holding = summary_df[summary_df["section"] == "metrics_holding"]
+            if not holding.empty:
+                expected_names = {
+                    "年化收益率", "夏普比率", "索提诺比率", "卡玛比率",
+                    "盈利因子", "溃疡指数", "溃疡绩效指数", "净值R方",
+                    "标准误差", "上涨星期比例", "上涨月份比例", "最大回撤率",
+                    "最长回撤修复天数", "年化波动率",
+                }
+                actual_names = set(holding["name"].dropna().unique())
+                self.assertTrue(
+                    expected_names.issubset(actual_names) or len(actual_names) >= 10,
+                    f"metrics_holding 应有完整指标，got: {actual_names}",
+                )
             detail_df = pd.read_csv(paths["detail"], encoding="utf-8-sig")
             self.assertIn("period_return", detail_df.columns)
 

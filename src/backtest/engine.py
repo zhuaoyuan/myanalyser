@@ -87,7 +87,15 @@ _CONFIG_NAME_CN = {
     "warmup": "预热天数",
     "initial_cash": "初始资金",
     "max_funds": "最大基金数",
+    "nav_dir": "净值目录",
 }
+
+# 回测相关环境变量，写入 summary.csv 便于复现
+_BACKTEST_ENV_VARS = (
+    "FUND_BACKTEST_FILTERS",
+    "FILTERED_FUND_CANDIDATES_CSV",
+    "FUND_BACKTEST_MAX_FUNDS",
+)
 _DATA_NAME_CN = {
     "symbols": "基金数量",
     "date_range": "日期范围",
@@ -526,7 +534,7 @@ def _render_markdown_report(
             by_section[sec] = []
         by_section[sec].append((name, val))
 
-    for sec in ["config", "data", "metrics"]:
+    for sec in ["config", "data", "env", "metrics"]:
         if sec not in by_section:
             continue
         lines.append(f"### {sec}")
@@ -582,6 +590,10 @@ def write_reports(
         name_cn = _CONFIG_NAME_CN.get(str(k), str(k))
         summary_rows.append({"section": "config", "name": name_cn, "value": v if v is None else str(v)})
     summary_rows.append({"section": "data", "name": _DATA_NAME_CN["symbols"], "value": len(data.by_symbol)})
+    # 记录回测相关环境变量
+    for env_name in _BACKTEST_ENV_VARS:
+        val = os.environ.get(env_name, "")
+        summary_rows.append({"section": "env", "name": env_name, "value": val if val else "(未设置)"})
     if data.trading_dates:
         summary_rows.append({
             "section": "data",

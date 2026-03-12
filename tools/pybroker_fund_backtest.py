@@ -134,6 +134,8 @@ def main() -> None:
         "top_n": args.top_n,
         "warmup": args.warmup,
         "initial_cash": args.initial_cash,
+        "nav_dir": str(args.nav_dir.resolve()),
+        "max_funds": args.max_funds,
     }
     reports = write_reports(
         args.output_dir,

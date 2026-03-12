@@ -354,26 +354,6 @@ def _get_first_buy_date(orders_df: pd.DataFrame) -> pd.Timestamp | None:
     return first if pd.notna(first) else None
 
 
-def _compute_portfolio_metrics_fund_core(
-    equity_curve: pd.DataFrame,
-    trading_days_per_year: int = 243,
-) -> dict[str, float | None]:
-    """用 fund_metrics_core 口径计算组合指标。"""
-    if equity_curve.empty or len(equity_curve) < 2:
-        return {}
-    try:
-        from fund_metrics_core import compute_low_risk_debt_metrics, WindowConfig
-    except ModuleNotFoundError as e:
-        warnings.warn(f"fund_metrics_core 未安装，跳过组合指标计算: {e}")
-        return {}
-
-    dates = equity_curve["date"].to_numpy(dtype="datetime64[D]")
-    prices = equity_curve["equity"].to_numpy(dtype=float)
-    cfg = WindowConfig(trading_days_per_year=trading_days_per_year)
-    out = compute_low_risk_debt_metrics(dates, prices, config=cfg)
-    return {k: (round(v, 6) if isinstance(v, float) else v) for k, v in out.items()}
-
-
 def _compute_portfolio_metrics_holding(
     equity_curve: pd.DataFrame,
     orders_df: pd.DataFrame,
@@ -676,14 +656,6 @@ def write_reports(
     )
     equity_path = output_dir / "equity_curve.csv"
     equity_curve.to_csv(equity_path, index=False, encoding="utf-8-sig")
-
-    # fund_metrics_core 指标
-    metrics_core = _compute_portfolio_metrics_fund_core(
-        equity_curve, trading_days_per_year=trading_days
-    )
-    for name, val in metrics_core.items():
-        if val is not None:
-            summary_rows.append({"section": "metrics", "name": name, "value": val})
 
     # metrics_holding：持仓期间指标（首次买入 → 结束），无买入时留空
     metrics_holding = _compute_portfolio_metrics_holding(

@@ -146,11 +146,11 @@ def main() -> None:
     )
 
     # 控制台核心指标摘要（收益率/回撤用 %，夏普/卡玛为无量纲比值用小数）
-    RATIO_METRICS = {"近1年夏普比率", "近3年夏普比率", "近1年卡玛比率", "近3年卡玛比率"}
+    RATIO_METRICS = {"夏普比率", "索提诺比率", "卡玛比率", "盈利因子", "溃疡绩效指数", "净值R方"}
     summary_df = pd.read_csv(reports["summary"], encoding="utf-8-sig")
-    metrics = summary_df[summary_df["section"] == "metrics"]
+    metrics = summary_df[summary_df["section"] == "metrics_holding"]
     if not metrics.empty:
-        key_names = ["近1年年化收益率", "近3年年化收益率", "近1年最大回撤率", "近1年夏普比率", "近1年卡玛比率"]
+        key_names = ["年化收益率", "最大回撤率", "夏普比率", "卡玛比率", "年化波动率"]
         parts = []
         for _, row in metrics.iterrows():
             name = str(row.get("name", ""))

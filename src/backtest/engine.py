@@ -343,7 +343,11 @@ def _get_first_buy_date(orders_df: pd.DataFrame) -> pd.Timestamp | None:
     col = "fill_date" if "fill_date" in orders_df.columns else "date"
     if col not in orders_df.columns:
         return None
-    buys = orders_df[orders_df["type"] == "buy"] if "type" in orders_df.columns else orders_df
+    buys = (
+        orders_df[orders_df["type"] == "buy"]
+        if "type" in orders_df.columns
+        else pd.DataFrame()
+    )
     if buys.empty:
         return None
     first = pd.to_datetime(buys[col].min(), errors="coerce")
@@ -622,12 +626,14 @@ def write_reports(
     data: BacktestData,
     run_config: dict[str, Any] | None = None,
     initial_cash: float = 100_000,
+    trading_days_per_year: int = 243,
 ) -> dict[str, Path]:
     _ensure_dir(output_dir)
 
     result = backtest_result.result
     period_log = backtest_result.period_log
     run_config = run_config or {}
+    trading_days = run_config.get("trading_days_per_year") or trading_days_per_year
 
     # 运行参数写入 summary（name 统一为中文）
     summary_rows = []
@@ -672,14 +678,16 @@ def write_reports(
     equity_curve.to_csv(equity_path, index=False, encoding="utf-8-sig")
 
     # fund_metrics_core 指标
-    metrics_core = _compute_portfolio_metrics_fund_core(equity_curve)
+    metrics_core = _compute_portfolio_metrics_fund_core(
+        equity_curve, trading_days_per_year=trading_days
+    )
     for name, val in metrics_core.items():
         if val is not None:
             summary_rows.append({"section": "metrics", "name": name, "value": val})
 
     # metrics_holding：持仓期间指标（首次买入 → 结束），无买入时留空
     metrics_holding = _compute_portfolio_metrics_holding(
-        equity_curve, orders_df, trading_days_per_year=243
+        equity_curve, orders_df, trading_days_per_year=trading_days
     )
     for name, val in metrics_holding.items():
         if val is not None:

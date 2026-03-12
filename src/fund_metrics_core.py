@@ -126,7 +126,10 @@ def sortino_ratio(daily_returns: np.ndarray, trading_days_per_year: int) -> floa
 
 
 def profit_factor(prices: np.ndarray) -> float | None:
-    """盈利因子：毛利/毛损（基于净值变化）。"""
+    """盈利因子：毛利/毛损（基于净值变化）。
+
+    无任何亏损日（losses==0）时返回 None，因分母未定义；调用方需自行处理。
+    """
     if len(prices) < 2:
         return None
     changes = np.diff(np.asarray(prices, dtype=float))
@@ -134,8 +137,10 @@ def profit_factor(prices: np.ndarray) -> float | None:
     losses = np.sum(changes[changes < 0])
     if losses >= 0:
         return None
-    eps = 1e-10
-    return (wins + eps) / (-losses + eps)
+    denom = -losses
+    if denom <= np.finfo(float).eps:
+        return None
+    return float(wins / denom)
 
 
 def ulcer_index(prices: np.ndarray) -> float | None:
@@ -165,34 +170,41 @@ def ulcer_performance_index(
     return (ann_ret - risk_free_rate) / ui
 
 
-def equity_r_squared(prices: np.ndarray) -> float | None:
-    """净值序列相对于线性趋势的 R 方。"""
-    if len(prices) < 3:
+def _linear_trend_residuals(y: np.ndarray) -> tuple[float, float, int] | None:
+    """线性趋势拟合，返回 ss_tot, ss_res, n。y 长度 < 3 时返回 None。"""
+    if len(y) < 3:
         return None
-    y = np.asarray(prices, dtype=float)
+    y = np.asarray(y, dtype=float)
     n = len(y)
     x = np.arange(n, dtype=float)
     x_mean, y_mean = x.mean(), y.mean()
     ss_tot = np.sum((y - y_mean) ** 2)
     if ss_tot <= 0:
         return None
-    b = np.sum((x - x_mean) * (y - y_mean)) / (np.sum((x - x_mean) ** 2) + 1e-20)
+    x_var = np.sum((x - x_mean) ** 2)
+    if x_var <= 0:
+        return None
+    b = np.sum((x - x_mean) * (y - y_mean)) / x_var
     a = y_mean - b * x_mean
     ss_res = np.sum((y - (a + b * x)) ** 2)
+    return (float(ss_tot), float(ss_res), n)
+
+
+def equity_r_squared(prices: np.ndarray) -> float | None:
+    """净值序列相对于线性趋势的 R 方。"""
+    out = _linear_trend_residuals(np.asarray(prices, dtype=float))
+    if out is None:
+        return None
+    ss_tot, ss_res, _ = out
     return float(1 - ss_res / ss_tot)
 
 
 def regression_std_error(prices: np.ndarray) -> float | None:
     """净值相对线性趋势的残差标准误差。"""
-    if len(prices) < 3:
+    out = _linear_trend_residuals(np.asarray(prices, dtype=float))
+    if out is None:
         return None
-    y = np.asarray(prices, dtype=float)
-    n = len(y)
-    x = np.arange(n, dtype=float)
-    x_mean, y_mean = x.mean(), y.mean()
-    b = np.sum((x - x_mean) * (y - y_mean)) / (np.sum((x - x_mean) ** 2) + 1e-20)
-    a = y_mean - b * x_mean
-    ss_res = np.sum((y - (a + b * x)) ** 2)
+    ss_tot, ss_res, n = out
     return float(np.sqrt(ss_res / (n - 2)))
 
 

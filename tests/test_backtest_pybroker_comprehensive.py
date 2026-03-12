@@ -343,7 +343,7 @@ class TestNormalScenarios(unittest.TestCase):
                 }
                 actual_names = set(holding["name"].dropna().unique())
                 self.assertTrue(
-                    expected_names.issubset(actual_names) or len(actual_names) >= 10,
+                    expected_names.issubset(actual_names),
                     f"metrics_holding 应有完整指标，got: {actual_names}",
                 )
             detail_df = pd.read_csv(paths["detail"], encoding="utf-8-sig")

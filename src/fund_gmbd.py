@@ -14,15 +14,10 @@ from __future__ import annotations
 import json
 import logging
 import re
-from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +70,12 @@ def _parse_num(val: str) -> float | None:
         return None
 
 
+_EMPTY_COLUMNS = [
+    "日期", "期间申购（亿份）", "期间赎回（亿份）",
+    "期末总份额（亿份）", "期末净资产（亿元）", "净资产变动率"
+]
+
+
 def fetch_gmbd_api(
     code: str,
     page: int = 1,
@@ -104,6 +105,8 @@ def fetch_gmbd_api(
         {"content": str, "summary": str, "data": list}
     """
     code = _normalize_code(code)
+    if not code or not code.isdigit():
+        return {"content": "", "summary": "", "data": []}
     url = "https://fundf10.eastmoney.com/FundArchivesDatas.aspx"
     params = {"code": code, "type": "gmbd", "page": page, "per": per}
     hdrs = headers or DEFAULT_HEADERS
@@ -113,6 +116,7 @@ def fetch_gmbd_api(
     text = resp.text
 
     # 解析 JS 返回值：var gmbd_apidata={ content:"<table>...</table>", summary:"...", data:[...]};
+    # data 数组为扁平对象列表，无嵌套数组，非贪婪匹配可正确截断
     content_m = re.search(r'content\s*:\s*"((?:[^"\\]|\\.)*)"', text)
     content = content_m.group(1) if content_m else ""
 
@@ -168,6 +172,9 @@ def fund_gmbd_em(code: str, timeout: int = 15) -> pd.DataFrame:
         列：日期、期间申购（亿份）、期间赎回（亿份）、期末总份额（亿份）、期末净资产（亿元）、净资产变动率
         数值列已转为 float，--- 为 NaN；按日期倒序（最新在前）
     """
+    code = _normalize_code(code)
+    if not code or not code.isdigit():
+        return pd.DataFrame(columns=_EMPTY_COLUMNS)
     apidata = fetch_gmbd_api(code, timeout=timeout)
     rows = apidata.get("data") or []
     content = apidata.get("content") or ""
@@ -178,8 +185,9 @@ def fund_gmbd_em(code: str, timeout: int = 15) -> pd.DataFrame:
             dt = r.get("FSRQ") or ""
             sg = _to_yiyuan(r.get("QJSG"))
             sh = _to_yiyuan(r.get("QJSH"))
-            mjzc = _to_yiyuan(r.get("QMJZC"))
-            mzfe = _to_yiyuan(r.get("QMZFE"))
+            mjzc = _to_yiyuan(r.get("QMJZC"))  # 期末总份额（亿份）
+            mzfe = _to_yiyuan(r.get("QMZFE"))  # 期末净资产（亿元）
+            # 货币基金等品种 API 有时仅返回 QMZFE，QMJZC 为空；份额=净资产，故 fallback
             if mjzc is None and mzfe is not None:
                 mjzc = mzfe
             zfebdl = _to_pct(r.get("ZFEBDL")) or r.get("CHANGE")
@@ -198,7 +206,4 @@ def fund_gmbd_em(code: str, timeout: int = 15) -> pd.DataFrame:
         if not df.empty:
             return df
 
-    return pd.DataFrame(columns=[
-        "日期", "期间申购（亿份）", "期间赎回（亿份）",
-        "期末总份额（亿份）", "期末净资产（亿元）", "净资产变动率"
-    ])
+    return pd.DataFrame(columns=_EMPTY_COLUMNS)

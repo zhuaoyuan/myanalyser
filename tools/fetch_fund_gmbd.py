@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 # 项目路径：tools 父级为 myanalyser
@@ -84,9 +85,8 @@ def main() -> int:
         print("\n请指定基金编码或 -i CSV 文件", file=sys.stderr)
         return 1
 
-    import time
-
     dfs: list[tuple[str, pd.DataFrame]] = []
+    failed: list[str] = []
     for i, code in enumerate(codes):
         try:
             df = fund_gmbd_em(code)
@@ -95,9 +95,13 @@ def main() -> int:
                 df.insert(0, "基金代码", code)
                 dfs.append((code, df))
         except Exception as e:
+            failed.append(code)
             print(f"  {code}: 失败 - {e}", file=sys.stderr)
         if i < len(codes) - 1 and args.delay > 0:
             time.sleep(args.delay)
+
+    if failed:
+        print(f"失败基金: {', '.join(failed)}", file=sys.stderr)
 
     if not dfs:
         print("未获取到任何数据", file=sys.stderr)

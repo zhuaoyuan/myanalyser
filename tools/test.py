@@ -26,9 +26,8 @@ import akshare as ak
 
 # fund_open_fund_info_em_df = ak.fund_open_fund_info_em(symbol="161606", indicator="分红送配详情")
 # print(fund_open_fund_info_em_df)
-for i in range(1000):
-    fund_open_fund_info_em_df = ak.fund_open_fund_info_em(symbol="000061", indicator="分红送配详情")
-    print(fund_open_fund_info_em_df)
+# fund_open_fund_info_em_df = ak.fund_open_fund_info_em(symbol="000061", indicator="分红送配详情")
+# print(fund_open_fund_info_em_df)
 #        年份       权益登记日         除息日          每份分红       分红发放日
 # 0   2021年  2021-12-16  2021-12-16  每份派现金0.1584元  2021-12-20
 # 1   2020年  2020-08-10  2020-08-10  每份派现金0.0820元  2020-08-12
@@ -97,3 +96,10 @@ for i in range(1000):
 # # ..          ...     ...
 # # 207  2026-01-09  213.27
 # # 208  2026-01-21  229.22
+
+import pandas as pd
+
+# 设置显示选项：将最大列数设为 None (无限制)
+pd.set_option('display.max_columns', None)
+fund_fee_em_df = ak.fund_fee_em(symbol="000306", indicator="赎回费率")
+print(fund_fee_em_df)

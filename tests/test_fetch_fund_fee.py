@@ -235,11 +235,65 @@ def test_parse_period_tier_days_and_years_mixed() -> None:
 
 
 def test_is_open_for_trade() -> None:
+    # 开放申购 + 开放赎回
     assert _is_open_for_trade({"申购状态": "开放申购", "赎回状态": "开放赎回", "_has_status_cols": True})
     assert not _is_open_for_trade({"申购状态": "暂停申购", "赎回状态": "开放赎回", "_has_status_cols": True})
     assert not _is_open_for_trade({"申购状态": "开放申购", "赎回状态": "限大额", "_has_status_cols": True})
     assert not _is_open_for_trade({"申购状态": "开放", "赎回状态": "开放赎回", "_has_status_cols": True})
     assert _is_open_for_trade({"_has_status_cols": False})  # 无状态列，全部查询
+
+    # 限大额 + 开放赎回 + 购买起点<=20万 + 日累计限定金额>10万 -> 视为可交易
+    rec_ok = {
+        "申购状态": "限大额", "赎回状态": "开放赎回",
+        "购买起点": 200000.0, "日累计限定金额": 100001.0,
+        "_has_status_cols": True, "_has_amount_cols": True,
+    }
+    assert _is_open_for_trade(rec_ok)
+    assert _is_open_for_trade({**rec_ok, "购买起点": 10.0, "日累计限定金额": 1000000.0})
+
+    # 限大额 但购买起点>20万 -> 不可交易
+    assert not _is_open_for_trade({**rec_ok, "购买起点": 200001.0})
+    # 限大额 但日累计限定金额<=10万 -> 不可交易
+    assert not _is_open_for_trade({**rec_ok, "日累计限定金额": 100000.0})
+    assert not _is_open_for_trade({**rec_ok, "日累计限定金额": 50000.0})
+    # 限大额 但缺金额列 -> 不可交易
+    assert not _is_open_for_trade({
+        "申购状态": "限大额", "赎回状态": "开放赎回", "_has_status_cols": True, "_has_amount_cols": False,
+    })
+
+    # 限大额放宽条件：申购=限大额、赎回=开放赎回、购买起点<=20万、日累计限定金额>10万
+    base_limit = {
+        "申购状态": "限大额",
+        "赎回状态": "开放赎回",
+        "_has_status_cols": True,
+        "_has_amount_cols": True,
+    }
+    assert _is_open_for_trade({
+        **base_limit,
+        "购买起点": 200000,
+        "日累计限定金额": 100001,
+    })
+    assert _is_open_for_trade({
+        **base_limit,
+        "购买起点": 10,
+        "日累计限定金额": 5000000,
+    })
+    assert not _is_open_for_trade({
+        **base_limit,
+        "购买起点": 200001,
+        "日累计限定金额": 5000000,
+    })
+    assert not _is_open_for_trade({
+        **base_limit,
+        "购买起点": 10,
+        "日累计限定金额": 100000,
+    })
+    assert not _is_open_for_trade({
+        "申购状态": "限大额",
+        "赎回状态": "开放赎回",
+        "_has_status_cols": True,
+        "_has_amount_cols": False,
+    })
 
 
 def test_run_no_fee_data_writes_exception_log(tmp_path: Path) -> None:

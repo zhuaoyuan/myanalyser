@@ -37,13 +37,26 @@ def _normalize_code(code: str) -> str:
     return raw
 
 
+def _parse_numeric(val: Any) -> float | None:
+    """解析数值，支持整数、小数、科学计数法；空/NaN 返回 None。"""
+    s = str(val).strip() if pd.notna(val) else ""
+    if not s or s == "nan" or s.lower() == "none":
+        return None
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return None
+
+
 def _load_fund_records(purchase_csv: Path) -> list[dict[str, Any]]:
-    """从 fund_purchase.csv 读取基金记录（去重保序），每项含 基金编码、申购状态、赎回状态、_has_status_cols。"""
+    """从 fund_purchase.csv 读取基金记录（去重保序），每项含 基金编码、申购状态、赎回状态、购买起点、日累计限定金额、_has_status_cols。"""
     df = pd.read_csv(purchase_csv, dtype=str, encoding="utf-8-sig")
     if "基金代码" not in df.columns:
         raise ValueError(f"缺少 基金代码 列: {purchase_csv}")
     has_purchase = "申购状态" in df.columns
     has_redemption = "赎回状态" in df.columns
+    has_min_amount = "购买起点" in df.columns
+    has_daily_limit = "日累计限定金额" in df.columns
     # 两列均存在时才按状态过滤；任一缺失则视为未知，保持旧版「全部查询」行为
     has_status_cols = has_purchase and has_redemption
 
@@ -52,6 +65,8 @@ def _load_fund_records(purchase_csv: Path) -> list[dict[str, Any]]:
     code_col_idx = df.columns.get_loc("基金代码")
     purchase_idx = df.columns.get_loc("申购状态") if has_purchase else None
     redemption_idx = df.columns.get_loc("赎回状态") if has_redemption else None
+    min_amount_idx = df.columns.get_loc("购买起点") if has_min_amount else None
+    daily_limit_idx = df.columns.get_loc("日累计限定金额") if has_daily_limit else None
 
     for row in df.itertuples(index=False):
         code = _normalize_code(str(row[code_col_idx]) if code_col_idx is not None else "")
@@ -60,24 +75,47 @@ def _load_fund_records(purchase_csv: Path) -> list[dict[str, Any]]:
         seen.add(code)
         purchase_s = str(row[purchase_idx]).strip() if purchase_idx is not None else ""
         redemption_s = str(row[redemption_idx]).strip() if redemption_idx is not None else ""
+        min_amt = _parse_numeric(row[min_amount_idx]) if min_amount_idx is not None else None
+        daily_lim = _parse_numeric(row[daily_limit_idx]) if daily_limit_idx is not None else None
         records.append({
             "基金编码": code,
             "申购状态": purchase_s,
             "赎回状态": redemption_s,
+            "购买起点": min_amt,
+            "日累计限定金额": daily_lim,
             "_has_status_cols": has_status_cols,
+            "_has_amount_cols": has_min_amount and has_daily_limit,
         })
     return records
 
 
-# 状态取值规范：申购状态需为「开放申购」、赎回状态需为「开放赎回」才查询费率；「开放」「限大额」等视为非开放
+# 限额阈值：限大额条件下 购买起点<=20万、日累计限定金额>10万 时可视为可交易
+_LIMIT_PURCHASE_MIN_THRESHOLD = 200000
+_LIMIT_DAILY_AMOUNT_THRESHOLD = 100000
+
+# 状态取值规范：申购状态需为「开放申购」、赎回状态需为「开放赎回」才查询费率；「限大额」在满足限额条件时也视为可交易
 def _is_open_for_trade(rec: dict[str, Any]) -> bool:
     """是否应查询费率。
-    需同时满足：申购状态==开放申购、赎回状态==开放赎回（精确匹配，数据源应为东方财富标准取值）。
+    满足以下任一条件即查询：
+    1. 申购状态==开放申购 且 赎回状态==开放赎回（精确匹配）。
+    2. 申购状态==限大额 且 赎回状态==开放赎回 且 购买起点<=20万 且 日累计限定金额>10万
+       （需 purchase_csv 含「购买起点」「日累计限定金额」列，缺列或解析失败则不满足）。
     若 purchase_csv 缺失「申购状态」或「赎回状态」列，视为未知，全部查询（兼容旧版）。
     """
     if not rec.get("_has_status_cols", False):
         return True
-    return rec.get("申购状态") == "开放申购" and rec.get("赎回状态") == "开放赎回"
+    purchase = rec.get("申购状态")
+    redemption = rec.get("赎回状态")
+    if redemption != "开放赎回":
+        return False
+    if purchase == "开放申购":
+        return True
+    if purchase == "限大额" and rec.get("_has_amount_cols", False):
+        min_amt = rec.get("购买起点")
+        daily_lim = rec.get("日累计限定金额")
+        if min_amt is not None and daily_lim is not None:
+            return min_amt <= _LIMIT_PURCHASE_MIN_THRESHOLD and daily_lim > _LIMIT_DAILY_AMOUNT_THRESHOLD
+    return False
 
 
 # ---- 自然语言解析 ----
@@ -332,6 +370,8 @@ def run(
             all_rows.append(_empty_fee_row(code, "赎回费率", purchase_status, redemption_status))
             continue
 
+        # 凡通过 _is_open_for_trade 的：开放申购/限大额均记为「开放申购」；无状态列时保留空
+        output_purchase_status = "开放申购" if purchase_status in ("开放申购", "限大额") else purchase_status
         purchase_df = _fetch_purchase_fee(code, logger)
         if request_delay > 0:
             time.sleep(request_delay)
@@ -341,11 +381,11 @@ def run(
 
         purchase_rows = _process_purchase_fee(
             code, purchase_df, logger,
-            purchase_status=purchase_status, redemption_status=redemption_status,
+            purchase_status=output_purchase_status, redemption_status=redemption_status,
         ) if purchase_df is not None and not purchase_df.empty else []
         redemption_rows = _process_redemption_fee(
             code, redemption_df, logger,
-            purchase_status=purchase_status, redemption_status=redemption_status,
+            purchase_status=output_purchase_status, redemption_status=redemption_status,
         ) if redemption_df is not None and not redemption_df.empty else []
 
         if not purchase_rows and not redemption_rows:

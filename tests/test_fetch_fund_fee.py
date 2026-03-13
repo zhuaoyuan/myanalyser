@@ -38,6 +38,12 @@ def test_parse_period_tier() -> None:
     assert _parse_period_tier("小于1年") == (0.0, 365.0)
     assert _parse_period_tier("---") == (None, None)
     assert _parse_period_tier("大于等于2年，小于3年") == (730.0, 1095.0)
+    # 补充：小于等于、大于等于+小于等于、大于+小于等于、大于（无上限）
+    assert _parse_period_tier("小于等于6天") == (0.0, 6.0)
+    assert _parse_period_tier("大于等于7天，小于等于29天") == (7.0, 29.0)
+    assert _parse_period_tier("大于等于7天，小于等于90天") == (7.0, 90.0)
+    assert _parse_period_tier("大于180天，小于等于270天") == (180.0, 270.0)
+    assert _parse_period_tier("大于270天") == (270.0, None)
 
 
 def test_parse_fee_value() -> None:

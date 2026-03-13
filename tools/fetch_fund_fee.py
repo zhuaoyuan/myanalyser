@@ -3,6 +3,10 @@
 """
 从 fund_purchase.csv 读取基金编码，调用 akshare fund_fee_em 获取申购费率和赎回费率，
 输出结构化 CSV，并记录无费率数据的基金到异常日志。
+
+阶梯区间约定（开闭区间）：
+  金额阶梯、持仓期限阶梯均为 [起点, 终点) 左闭右开；终点为空表示 [起点, ∞)。
+  边界值归属「下一档」。例：赎回 0.0~7.0 与 7.0~ 相邻时，7 天归属 7.0~ 档。
 """
 from __future__ import annotations
 
@@ -102,14 +106,22 @@ def _parse_amount_tier(text: str | Any) -> tuple[float | None, float | None]:
 
 
 _PERIOD_PATTERNS = [
+    # 大于等于X天，小于等于Y天（需在「小于Y天」前，避免部分匹配）
+    (re.compile(r"大于等于\s*([\d.]+)\s*天\s*[，,]\s*小于等于\s*([\d.]+)\s*天"), lambda m: (float(m[1]), float(m[2]))),
+    # 大于X天，小于等于Y天
+    (re.compile(r"大于\s*([\d.]+)\s*天\s*[，,]\s*小于等于\s*([\d.]+)\s*天"), lambda m: (float(m[1]), float(m[2]))),
     # 大于等于X天，小于Y天
     (re.compile(r"大于等于\s*([\d.]+)\s*天\s*[，,]\s*小于\s*([\d.]+)\s*天"), lambda m: (float(m[1]), float(m[2]))),
     # 大于等于X天，小于Y年
     (re.compile(r"大于等于\s*([\d.]+)\s*天\s*[，,]\s*小于\s*([\d.]+)\s*年"), lambda m: (float(m[1]), float(m[2]) * 365)),
     # 大于等于X年，小于Y年
     (re.compile(r"大于等于\s*([\d.]+)\s*年\s*[，,]\s*小于\s*([\d.]+)\s*年"), lambda m: (float(m[1]) * 365, float(m[2]) * 365)),
-    # 大于等于X天
+    # 小于等于X天
+    (re.compile(r"小于等于\s*([\d.]+)\s*天"), lambda m: (0.0, float(m[1]))),
+    # 大于等于X天（无上限）
     (re.compile(r"大于等于\s*([\d.]+)\s*天"), lambda m: (float(m[1]), None)),
+    # 大于X天（无上限）
+    (re.compile(r"大于\s*([\d.]+)\s*天"), lambda m: (float(m[1]), None)),
     # 小于X天
     (re.compile(r"小于\s*([\d.]+)\s*天"), lambda m: (0.0, float(m[1]))),
     # 大于等于X年

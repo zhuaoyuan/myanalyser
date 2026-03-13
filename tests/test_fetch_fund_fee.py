@@ -10,11 +10,13 @@ import pandas as pd
 import pytest
 
 from fetch_fund_fee import (
+    _normalize_code,
     _parse_amount_tier,
     _parse_period_tier,
     _parse_fee_value,
     _choose_min_fee,
     _load_fund_records,
+    _is_open_for_trade,
     run,
 )
 
@@ -185,3 +187,141 @@ def test_run_no_status_columns_queries_all(tmp_path: Path) -> None:
     assert len(result) >= 3
     assert all(result["基金编码"] == "000306")
     assert all(result["申购状态"].fillna("") == "") and all(result["赎回状态"].fillna("") == "")
+
+
+# ---- 边界/异常场景 ----
+
+def test_normalize_code() -> None:
+    assert _normalize_code("1") == "000001"
+    assert _normalize_code("000001") == "000001"
+    assert _normalize_code("  123  ") == "000123"
+    assert _normalize_code("1234567") == "1234567"  # 非6位数字保留原样
+
+
+def test_load_fund_records_missing_code_column(tmp_path: Path) -> None:
+    csv_path = tmp_path / "bad.csv"
+    pd.DataFrame({"其他列": ["a"]}).to_csv(csv_path, index=False, encoding="utf-8-sig")
+    with pytest.raises(ValueError, match="缺少 基金代码 列"):
+        _load_fund_records(csv_path)
+
+
+def test_load_fund_records_code_normalization(tmp_path: Path) -> None:
+    csv_path = tmp_path / "purchase.csv"
+    pd.DataFrame({
+        "基金代码": ["1", "000002"],
+        "申购状态": ["开放申购", "开放申购"],
+        "赎回状态": ["开放赎回", "开放赎回"],
+    }).to_csv(csv_path, index=False, encoding="utf-8-sig")
+    records = _load_fund_records(csv_path)
+    assert [r["基金编码"] for r in records] == ["000001", "000002"]
+
+
+def test_parse_amount_tier_boundary_empty_and_em_dash() -> None:
+    assert _parse_amount_tier("") == (None, None)
+    assert _parse_amount_tier("---") == (None, None)
+    assert _parse_amount_tier("—") == (None, None)  # em dash
+    assert _parse_amount_tier(pd.NA) == (None, None)
+
+
+def test_parse_period_tier_days_and_years_mixed() -> None:
+    """大于等于7天，小于1年 格式（需求中的自然语言变体）。"""
+    assert _parse_period_tier("大于等于7天，小于1年") == (7.0, 365.0)
+
+
+def test_is_open_for_trade() -> None:
+    assert _is_open_for_trade({"申购状态": "开放申购", "赎回状态": "开放赎回", "_has_status_cols": True})
+    assert not _is_open_for_trade({"申购状态": "暂停申购", "赎回状态": "开放赎回", "_has_status_cols": True})
+    assert not _is_open_for_trade({"申购状态": "开放申购", "赎回状态": "限大额", "_has_status_cols": True})
+    assert not _is_open_for_trade({"申购状态": "开放", "赎回状态": "开放赎回", "_has_status_cols": True})
+    assert _is_open_for_trade({"_has_status_cols": False})  # 无状态列，全部查询
+
+
+def test_run_no_fee_data_writes_exception_log(tmp_path: Path) -> None:
+    """无费率数据时写入异常日志，不写入主结果 CSV。"""
+    purchase_csv = tmp_path / "fund_purchase.csv"
+    purchase_csv.write_text(
+        "基金代码,申购状态,赎回状态\n000999,开放申购,开放赎回\n",
+        encoding="utf-8-sig",
+    )
+    output_csv = tmp_path / "fund_fee_structured.csv"
+    exception_log = tmp_path / "fund_fee_exceptions.csv"
+    logger = logging.getLogger("test")
+
+    def mock_return_empty(*args, **kwargs):
+        return None
+
+    with patch("akshare.fund_fee_em", side_effect=mock_return_empty):
+        run(purchase_csv, output_csv, exception_log, logger, request_delay=0)
+
+    assert not output_csv.exists() or pd.read_csv(output_csv, dtype=str).empty
+    assert exception_log.exists()
+    exc_df = pd.read_csv(exception_log, dtype=str, encoding="utf-8-sig")
+    assert "000999" in exc_df["基金编码"].values
+
+
+def test_run_api_exception_continues(tmp_path: Path) -> None:
+    """某基金 API 异常时，继续处理其他基金。"""
+    purchase_csv = tmp_path / "fund_purchase.csv"
+    purchase_csv.write_text(
+        "基金代码,申购状态,赎回状态\n000A,开放申购,开放赎回\n000306,开放申购,开放赎回\n",
+        encoding="utf-8-sig",
+    )
+    output_csv = tmp_path / "fund_fee_structured.csv"
+    exception_log = tmp_path / "fund_fee_exceptions.csv"
+    logger = logging.getLogger("test")
+
+    purchase_df = pd.DataFrame({
+        "适用金额": ["小于100万元"],
+        "适用期限": ["---"],
+        "原费率": ["0.15%"],
+    })
+    redemption_df = pd.DataFrame({
+        "适用金额": ["---"],
+        "适用期限": ["大于等于7天"],
+        "赎回费率": ["0.00%"],
+    })
+
+    def mock_fund_fee_em(symbol: str, indicator: str):
+        if symbol == "000A":
+            raise RuntimeError("网络错误")
+        return purchase_df if "申购" in indicator else redemption_df
+
+    with patch("akshare.fund_fee_em", side_effect=mock_fund_fee_em):
+        run(purchase_csv, output_csv, exception_log, logger, request_delay=0)
+
+    result = pd.read_csv(output_csv, dtype=str, encoding="utf-8-sig")
+    assert "000306" in result["基金编码"].values
+    assert "000A" not in result["基金编码"].values
+
+
+@pytest.mark.parametrize("status", ["限大额", "开放"])
+def test_run_limit_big_amount_skip_query(tmp_path: Path, status: str) -> None:
+    """限大额、开放 等非「开放申购/开放赎回」不查询费率。"""
+    purchase_csv = tmp_path / "fund_purchase.csv"
+    purchase_csv.write_text(
+        f"基金代码,申购状态,赎回状态\n000999,{status},开放赎回\n",
+        encoding="utf-8-sig",
+    )
+    output_csv = tmp_path / "fund_fee_structured.csv"
+    exception_log = tmp_path / "fund_fee_exceptions.csv"
+    logger = logging.getLogger("test")
+    call_count = 0
+
+    def track_calls(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return pd.DataFrame()
+
+    with patch("akshare.fund_fee_em", side_effect=track_calls):
+        run(purchase_csv, output_csv, exception_log, logger, request_delay=0)
+
+    assert call_count == 0
+
+
+def test_main_input_file_not_found() -> None:
+    """输入文件不存在时 main 返回 1。"""
+    with patch("sys.argv", ["fetch_fund_fee", "/nonexistent/path.csv"]):
+        from fetch_fund_fee import main
+        ret = main()
+    assert ret == 1
+

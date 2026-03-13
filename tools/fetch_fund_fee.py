@@ -33,19 +33,30 @@ def _normalize_code(code: str) -> str:
     return raw
 
 
-def _load_fund_codes(purchase_csv: Path) -> list[str]:
-    """从 fund_purchase.csv 读取基金代码列表（去重、保序）。"""
+def _load_fund_records(purchase_csv: Path) -> list[dict[str, str]]:
+    """从 fund_purchase.csv 读取基金记录（去重保序），每项含 基金编码、申购状态、赎回状态。"""
     df = pd.read_csv(purchase_csv, dtype=str, encoding="utf-8-sig")
     if "基金代码" not in df.columns:
         raise ValueError(f"缺少 基金代码 列: {purchase_csv}")
-    codes = df["基金代码"].map(_normalize_code).dropna().tolist()
+    has_purchase = "申购状态" in df.columns
+    has_redemption = "赎回状态" in df.columns
+
+    records: list[dict[str, str]] = []
     seen: set[str] = set()
-    ordered: list[str] = []
-    for c in codes:
-        if c and c not in seen:
-            seen.add(c)
-            ordered.append(c)
-    return ordered
+    for _, row in df.iterrows():
+        code = _normalize_code(row.get("基金代码", ""))
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        purchase_s = str(row.get("申购状态", "")).strip() if has_purchase else ""
+        redemption_s = str(row.get("赎回状态", "")).strip() if has_redemption else ""
+        records.append({"基金编码": code, "申购状态": purchase_s, "赎回状态": redemption_s})
+    return records
+
+
+def _is_open_for_trade(rec: dict[str, str]) -> bool:
+    """申购状态==开放申购 且 赎回状态==开放赎回 时才查询费率。"""
+    return rec.get("申购状态") == "开放申购" and rec.get("赎回状态") == "开放赎回"
 
 
 # ---- 自然语言解析 ----
@@ -166,8 +177,29 @@ def _fetch_redemption_fee(symbol: str, logger: logging.Logger) -> pd.DataFrame |
     return None
 
 
+def _empty_fee_row(
+    code: str, data_type: str, purchase_status: str, redemption_status: str
+) -> dict[str, Any]:
+    """构造一条费率字段为空的记录（用于非开放申购/赎回的基金）。"""
+    return {
+        "基金编码": code,
+        "申购状态": purchase_status,
+        "赎回状态": redemption_status,
+        "数据类型": data_type,
+        "费率": "",
+        "金额阶梯起点": "",
+        "金额阶梯终点": "",
+        "持仓期限阶梯起点": "",
+        "持仓期限阶梯终点": "",
+    }
+
+
 def _process_purchase_fee(
-    symbol: str, df: pd.DataFrame, logger: logging.Logger
+    symbol: str,
+    df: pd.DataFrame,
+    logger: logging.Logger,
+    purchase_status: str = "",
+    redemption_status: str = "",
 ) -> list[dict[str, Any]]:
     """将申购费率 DataFrame 转为结构化记录。"""
     if df.empty or len(df.columns) == 0:
@@ -190,6 +222,8 @@ def _process_purchase_fee(
         period_start, period_end = _parse_period_tier(period_text)
         rows.append({
             "基金编码": symbol,
+            "申购状态": purchase_status,
+            "赎回状态": redemption_status,
             "数据类型": "申购费率",
             "费率": fee_str,
             "金额阶梯起点": "" if amt_start is None else str(amt_start),
@@ -201,7 +235,11 @@ def _process_purchase_fee(
 
 
 def _process_redemption_fee(
-    symbol: str, df: pd.DataFrame, logger: logging.Logger
+    symbol: str,
+    df: pd.DataFrame,
+    logger: logging.Logger,
+    purchase_status: str = "",
+    redemption_status: str = "",
 ) -> list[dict[str, Any]]:
     """将赎回费率 DataFrame 转为结构化记录。"""
     if df.empty or len(df.columns) == 0:
@@ -226,6 +264,8 @@ def _process_redemption_fee(
         period_start, period_end = _parse_period_tier(period_text)
         rows.append({
             "基金编码": symbol,
+            "申购状态": purchase_status,
+            "赎回状态": redemption_status,
             "数据类型": "赎回费率",
             "费率": fee_str,
             "金额阶梯起点": "" if amt_start is None else str(amt_start),
@@ -244,15 +284,24 @@ def run(
     request_delay: float = DEFAULT_REQUEST_DELAY,
 ) -> None:
     """主流程。"""
-    codes = _load_fund_codes(purchase_csv)
-    logger.info("共 %d 只基金待处理", len(codes))
+    records = _load_fund_records(purchase_csv)
+    logger.info("共 %d 只基金待处理", len(records))
 
     all_rows: list[dict[str, Any]] = []
     no_fee_codes: list[dict[str, Any]] = []
 
-    for i, code in enumerate(codes):
+    for i, rec in enumerate(records):
+        code = rec["基金编码"]
+        purchase_status = rec.get("申购状态", "")
+        redemption_status = rec.get("赎回状态", "")
+
         if (i + 1) % 50 == 0 or i == 0:
-            logger.info("处理进度 %d/%d", i + 1, len(codes))
+            logger.info("处理进度 %d/%d", i + 1, len(records))
+
+        if not _is_open_for_trade(rec):
+            all_rows.append(_empty_fee_row(code, "申购费率", purchase_status, redemption_status))
+            all_rows.append(_empty_fee_row(code, "赎回费率", purchase_status, redemption_status))
+            continue
 
         purchase_df = _fetch_purchase_fee(code, logger)
         if request_delay > 0:
@@ -261,8 +310,14 @@ def run(
         if request_delay > 0:
             time.sleep(request_delay)
 
-        purchase_rows = _process_purchase_fee(code, purchase_df, logger) if purchase_df is not None and not purchase_df.empty else []
-        redemption_rows = _process_redemption_fee(code, redemption_df, logger) if redemption_df is not None and not redemption_df.empty else []
+        purchase_rows = _process_purchase_fee(
+            code, purchase_df, logger,
+            purchase_status=purchase_status, redemption_status=redemption_status,
+        ) if purchase_df is not None and not purchase_df.empty else []
+        redemption_rows = _process_redemption_fee(
+            code, redemption_df, logger,
+            purchase_status=purchase_status, redemption_status=redemption_status,
+        ) if redemption_df is not None and not redemption_df.empty else []
 
         if not purchase_rows and not redemption_rows:
             no_fee_codes.append({
@@ -277,7 +332,7 @@ def run(
 
     out_df = pd.DataFrame(all_rows)
     if not out_df.empty:
-        cols = ["基金编码", "数据类型", "费率", "金额阶梯起点", "金额阶梯终点", "持仓期限阶梯起点", "持仓期限阶梯终点"]
+        cols = ["基金编码", "申购状态", "赎回状态", "数据类型", "费率", "金额阶梯起点", "金额阶梯终点", "持仓期限阶梯起点", "持仓期限阶梯终点"]
         out_df = out_df[cols]
         out_df.to_csv(output_csv, index=False, encoding="utf-8-sig")
         logger.info("已写入 %s，共 %d 行", output_csv, len(out_df))

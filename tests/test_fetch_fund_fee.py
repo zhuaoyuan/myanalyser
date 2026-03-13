@@ -13,7 +13,7 @@ from fetch_fund_fee import (
     _parse_period_tier,
     _parse_fee_value,
     _choose_min_fee,
-    _load_fund_codes,
+    _load_fund_records,
     run,
 )
 
@@ -58,19 +58,22 @@ def test_choose_min_fee() -> None:
     assert _choose_min_fee(row2, fee_cols) == "每笔1000元"
 
 
-def test_load_fund_codes(tmp_path: Path) -> None:
+def test_load_fund_records(tmp_path: Path) -> None:
     csv_path = tmp_path / "purchase.csv"
-    pd.DataFrame({"基金代码": ["000001", "000002", "000001"]}).to_csv(
-        csv_path, index=False, encoding="utf-8-sig"
-    )
-    codes = _load_fund_codes(csv_path)
-    assert codes == ["000001", "000002"]
+    pd.DataFrame({
+        "基金代码": ["000001", "000002", "000001"],
+        "申购状态": ["开放申购", "开放申购", "开放申购"],
+        "赎回状态": ["开放赎回", "开放赎回", "开放赎回"],
+    }).to_csv(csv_path, index=False, encoding="utf-8-sig")
+    records = _load_fund_records(csv_path)
+    assert [r["基金编码"] for r in records] == ["000001", "000002"]
+    assert records[0]["申购状态"] == "开放申购" and records[0]["赎回状态"] == "开放赎回"
 
 
 def test_run_with_mocked_akshare(tmp_path: Path) -> None:
     purchase_csv = tmp_path / "fund_purchase.csv"
     purchase_csv.write_text(
-        "基金代码,基金简称,申购状态,赎回状态\n000306,某基金,开放,开放\n",
+        "基金代码,基金简称,申购状态,赎回状态\n000306,某基金,开放申购,开放赎回\n",
         encoding="utf-8-sig",
     )
     output_csv = tmp_path / "fund_fee_structured.csv"
@@ -95,13 +98,12 @@ def test_run_with_mocked_akshare(tmp_path: Path) -> None:
             return purchase_df
         return redemption_df
 
-    with patch("fetch_fund_fee.ak") as mock_ak:
-        mock_ak.fund_fee_em = mock_fund_fee_em
+    with patch("akshare.fund_fee_em", side_effect=mock_fund_fee_em):
         run(purchase_csv, output_csv, exception_log, logger, request_delay=0)
 
     result = pd.read_csv(output_csv, dtype=str, encoding="utf-8-sig")
     assert list(result.columns) == [
-        "基金编码", "数据类型", "费率", "金额阶梯起点", "金额阶梯终点",
+        "基金编码", "申购状态", "赎回状态", "数据类型", "费率", "金额阶梯起点", "金额阶梯终点",
         "持仓期限阶梯起点", "持仓期限阶梯终点",
     ]
     assert len(result) == 4
@@ -112,3 +114,63 @@ def test_run_with_mocked_akshare(tmp_path: Path) -> None:
     assert "每笔1000元" in fees
     assert "1.50%" in fees
     assert "0.00%" in fees
+
+
+def test_run_skip_fee_query_when_not_open(tmp_path: Path) -> None:
+    """申购/赎回非开放时不查费率，输出空费率行；且不调用 akshare。"""
+    purchase_csv = tmp_path / "fund_purchase.csv"
+    purchase_csv.write_text(
+        "基金代码,基金简称,申购状态,赎回状态\n000999,暂停基金,暂停申购,开放赎回\n",
+        encoding="utf-8-sig",
+    )
+    output_csv = tmp_path / "fund_fee_structured.csv"
+    exception_log = tmp_path / "fund_fee_exceptions.csv"
+    logger = logging.getLogger("test")
+
+    call_count = 0
+
+    def track_calls(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return pd.DataFrame()
+
+    with patch("akshare.fund_fee_em", side_effect=track_calls):
+        run(purchase_csv, output_csv, exception_log, logger, request_delay=0)
+
+    assert call_count == 0, "非开放基金不应调用 akshare"
+    result = pd.read_csv(output_csv, dtype=str, encoding="utf-8-sig")
+    assert len(result) == 2  # 申购费率、赎回费率 各一行
+    assert all(result["基金编码"] == "000999")
+    assert all(result["申购状态"] == "暂停申购") and all(result["赎回状态"] == "开放赎回")
+    assert all(result["费率"].fillna("") == "")
+
+
+def test_run_skip_non_open_fund(tmp_path: Path) -> None:
+    """非开放申购/赎回的基金不查费率，结果中费率字段留空。"""
+    purchase_csv = tmp_path / "fund_purchase.csv"
+    purchase_csv.write_text(
+        "基金代码,申购状态,赎回状态\n000999,暂停申购,开放赎回\n",
+        encoding="utf-8-sig",
+    )
+    output_csv = tmp_path / "fund_fee_structured.csv"
+    exception_log = tmp_path / "fund_fee_exceptions.csv"
+    logger = logging.getLogger("test")
+
+    call_count = 0
+
+    def mock_fund_fee_em(symbol: str, indicator: str):
+        nonlocal call_count
+        call_count += 1
+        raise AssertionError("不应调用 akshare：非开放基金应跳过查询")
+
+    with patch("akshare.fund_fee_em", side_effect=mock_fund_fee_em):
+        run(purchase_csv, output_csv, exception_log, logger, request_delay=0)
+
+    assert call_count == 0
+    result = pd.read_csv(output_csv, dtype=str, encoding="utf-8-sig")
+    assert len(result) == 2  # 申购费率、赎回费率 各一行
+    assert (result["基金编码"] == "000999").all()
+    assert (result["申购状态"] == "暂停申购").all()
+    assert (result["赎回状态"] == "开放赎回").all()
+    assert (result["费率"].fillna("") == "").all()
+    assert (result["金额阶梯起点"].fillna("") == "").all()

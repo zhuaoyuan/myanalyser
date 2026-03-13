@@ -101,5 +101,5 @@ import pandas as pd
 
 # 设置显示选项：将最大列数设为 None (无限制)
 pd.set_option('display.max_columns', None)
-fund_fee_em_df = ak.fund_fee_em(symbol="000306", indicator="赎回费率")
+fund_fee_em_df = ak.fund_fee_em(symbol="000306", indicator="申购费率（前端）")
 print(fund_fee_em_df)

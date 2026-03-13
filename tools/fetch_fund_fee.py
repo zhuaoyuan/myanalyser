@@ -10,7 +10,7 @@ import argparse
 import logging
 import re
 import sys
-from dataclasses import dataclass
+import time
 from pathlib import Path
 from typing import Any
 
@@ -22,8 +22,8 @@ try:
 except ImportError as e:
     raise RuntimeError("需要安装 akshare: pip install akshare") from e
 
-# 项目根目录
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+# 默认请求间隔（秒），用于降低 akshare 限流风险
+DEFAULT_REQUEST_DELAY = 0.3
 
 
 def _normalize_code(code: str) -> str:
@@ -170,9 +170,12 @@ def _process_purchase_fee(
     symbol: str, df: pd.DataFrame, logger: logging.Logger
 ) -> list[dict[str, Any]]:
     """将申购费率 DataFrame 转为结构化记录。"""
+    if df.empty or len(df.columns) == 0:
+        return []
     rows: list[dict[str, Any]] = []
-    amt_col = "适用金额" if "适用期限" in df.columns else df.columns[0]
-    period_col = "适用期限" if "适用期限" in df.columns else (df.columns[1] if len(df.columns) > 1 else None)
+    has_std_cols = "适用金额" in df.columns and "适用期限" in df.columns
+    amt_col = "适用金额" if has_std_cols else df.columns[0]
+    period_col = "适用期限" if has_std_cols else (df.columns[1] if len(df.columns) > 1 else None)
     fee_cols = [c for c in df.columns if c not in (amt_col, period_col) and ("费率" in c or "费" in c)]
     if not fee_cols:
         fee_cols = [c for c in df.columns if c not in (amt_col, period_col)]
@@ -189,10 +192,10 @@ def _process_purchase_fee(
             "基金编码": symbol,
             "数据类型": "申购费率",
             "费率": fee_str,
-            "金额阶梯起点": "" if amt_start is None else amt_start,
-            "金额阶梯终点": "" if amt_end is None else amt_end,
-            "持仓期限阶梯起点": "" if period_start is None else period_start,
-            "持仓期限阶梯终点": "" if period_end is None else period_end,
+            "金额阶梯起点": "" if amt_start is None else str(amt_start),
+            "金额阶梯终点": "" if amt_end is None else str(amt_end),
+            "持仓期限阶梯起点": "" if period_start is None else str(period_start),
+            "持仓期限阶梯终点": "" if period_end is None else str(period_end),
         })
     return rows
 
@@ -201,13 +204,17 @@ def _process_redemption_fee(
     symbol: str, df: pd.DataFrame, logger: logging.Logger
 ) -> list[dict[str, Any]]:
     """将赎回费率 DataFrame 转为结构化记录。"""
+    if df.empty or len(df.columns) == 0:
+        return []
     rows: list[dict[str, Any]] = []
     amt_col = "适用金额" if "适用金额" in df.columns else None
     period_col = "适用期限" if "适用期限" in df.columns else None
-    fee_col = "赎回费率" if "赎回费率" in df.columns else None
+    fee_candidates = [c for c in df.columns if "费" in c]
+    fee_col = "赎回费率" if "赎回费率" in df.columns else (
+        fee_candidates[0] if fee_candidates else (df.columns[-1] if len(df.columns) > 0 else None)
+    )
     if fee_col is None:
-        fee_col = [c for c in df.columns if "费" in c]
-        fee_col = fee_col[0] if fee_col else df.columns[-1]
+        return []
 
     for _, row in df.iterrows():
         amt_text = row.get(amt_col, "") if amt_col else ""
@@ -221,10 +228,10 @@ def _process_redemption_fee(
             "基金编码": symbol,
             "数据类型": "赎回费率",
             "费率": fee_str,
-            "金额阶梯起点": "" if amt_start is None else amt_start,
-            "金额阶梯终点": "" if amt_end is None else amt_end,
-            "持仓期限阶梯起点": "" if period_start is None else period_start,
-            "持仓期限阶梯终点": "" if period_end is None else period_end,
+            "金额阶梯起点": "" if amt_start is None else str(amt_start),
+            "金额阶梯终点": "" if amt_end is None else str(amt_end),
+            "持仓期限阶梯起点": "" if period_start is None else str(period_start),
+            "持仓期限阶梯终点": "" if period_end is None else str(period_end),
         })
     return rows
 
@@ -234,6 +241,7 @@ def run(
     output_csv: Path,
     exception_log: Path,
     logger: logging.Logger,
+    request_delay: float = DEFAULT_REQUEST_DELAY,
 ) -> None:
     """主流程。"""
     codes = _load_fund_codes(purchase_csv)
@@ -247,7 +255,11 @@ def run(
             logger.info("处理进度 %d/%d", i + 1, len(codes))
 
         purchase_df = _fetch_purchase_fee(code, logger)
+        if request_delay > 0:
+            time.sleep(request_delay)
         redemption_df = _fetch_redemption_fee(code, logger)
+        if request_delay > 0:
+            time.sleep(request_delay)
 
         purchase_rows = _process_purchase_fee(code, purchase_df, logger) if purchase_df is not None and not purchase_df.empty else []
         redemption_rows = _process_redemption_fee(code, redemption_df, logger) if redemption_df is not None and not redemption_df.empty else []
@@ -300,6 +312,13 @@ def main() -> int:
         default=None,
         help="无费率数据异常日志路径，默认与 output 同目录下的 fund_fee_exceptions.csv",
     )
+    parser.add_argument(
+        "--delay",
+        type=float,
+        default=DEFAULT_REQUEST_DELAY,
+        metavar="SEC",
+        help="每次 API 请求后休眠秒数，用于降低限流风险（默认 0.3）",
+    )
     args = parser.parse_args()
 
     purchase_csv = args.purchase_csv.resolve()
@@ -319,7 +338,7 @@ def main() -> int:
     else:
         exc = exc.resolve()
 
-    run(purchase_csv, out, exc, logger)
+    run(purchase_csv, out, exc, logger, request_delay=args.delay)
     return 0
 
 

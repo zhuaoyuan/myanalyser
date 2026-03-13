@@ -1,7 +1,9 @@
-"""Pytest 配置：确保 myanalyser/src 在 PYTHONPATH 中，供各测试模块导入。"""
+"""Pytest 配置：确保 myanalyser/src、myanalyser/tools 在 PYTHONPATH 中，供各测试模块导入。"""
 import sys
 from pathlib import Path
 
-_src = Path(__file__).resolve().parent.parent / "src"
-if str(_src) not in sys.path:
-    sys.path.insert(0, str(_src))
+_root = Path(__file__).resolve().parent.parent
+for subdir in ("src", "tools"):
+    _p = _root / subdir
+    if _p.exists() and str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))

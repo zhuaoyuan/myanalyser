@@ -2,13 +2,11 @@
 """fetch_fund_fee 脚本的单元测试（解析逻辑 + 主流程 mock）。"""
 from __future__ import annotations
 
-import sys
+import logging
 from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 
 from fetch_fund_fee import (
     _parse_amount_tier,
@@ -90,7 +88,6 @@ def test_run_with_mocked_akshare(tmp_path: Path) -> None:
         "赎回费率": ["1.50%", "0.00%"],
     })
 
-    import logging
     logger = logging.getLogger("test")
 
     def mock_fund_fee_em(symbol: str, indicator: str):
@@ -98,8 +95,9 @@ def test_run_with_mocked_akshare(tmp_path: Path) -> None:
             return purchase_df
         return redemption_df
 
-    with patch("akshare.fund_fee_em", side_effect=mock_fund_fee_em):
-        run(purchase_csv, output_csv, exception_log, logger)
+    with patch("fetch_fund_fee.ak") as mock_ak:
+        mock_ak.fund_fee_em = mock_fund_fee_em
+        run(purchase_csv, output_csv, exception_log, logger, request_delay=0)
 
     result = pd.read_csv(output_csv, dtype=str, encoding="utf-8-sig")
     assert list(result.columns) == [

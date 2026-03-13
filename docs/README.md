@@ -43,6 +43,7 @@ myanalyser/
 - `src/scoreboard_metrics.py`：评分榜指标计算共享模块（供 pipeline 与 verify 共用；与 backtest 共用 `fund_metrics_core` 保证口径一致）
 - `src/fund_metrics_core.py`：基金指标计算核心逻辑（Backtest 与 Scoreboard 共用，A 股口径：243 交易日/年、20 交易日/月）
 - `src/backtest_portfolio.py`：按规则回测组合
+- `src/fund_gmbd.py`：基金规模变动数据抓取（东方财富 FundArchivesDatas API，akshare 风格 `fund_gmbd_em(code)`）；CLI `tools/fetch_fund_gmbd.py`
 - `src/verify_scoreboard_recalc.py`：榜单指标独立重算核验（从 fund_etl 中间数据重算并与导出榜单比对，支持 `--latest-nav-date`）
 - `src/contracts/pipeline_contracts.py`：关键中间产物契约（列名/类型/非空/唯一键、目录 CSV 文件数量）
 - `src/validators/validate_pipeline_artifacts.py`：按 stage 执行契约校验（失败返回非 0）
@@ -203,6 +204,12 @@ python src/transforms/build_filtered_purchase_csv.py \
 python src/compute_fund_composite_score.py \
   -i result_example/0301_manual_filtered.csv \
   -o artifacts/composite_score_output.csv
+```
+
+```bash
+# 10.1) 基金规模变动抓取（东方财富 FundArchivesDatas API，akshare 风格）
+python tools/fetch_fund_gmbd.py 000198 110011 -o artifacts/fund_gmbd.csv
+# 或从 CSV 读取基金代码列：-i fund_purchase.csv -o output.csv [--delay 0.3]
 ```
 
 ```bash

@@ -33,29 +33,46 @@ def _normalize_code(code: str) -> str:
     return raw
 
 
-def _load_fund_records(purchase_csv: Path) -> list[dict[str, str]]:
-    """从 fund_purchase.csv 读取基金记录（去重保序），每项含 基金编码、申购状态、赎回状态。"""
+def _load_fund_records(purchase_csv: Path) -> list[dict[str, Any]]:
+    """从 fund_purchase.csv 读取基金记录（去重保序），每项含 基金编码、申购状态、赎回状态、_has_status_cols。"""
     df = pd.read_csv(purchase_csv, dtype=str, encoding="utf-8-sig")
     if "基金代码" not in df.columns:
         raise ValueError(f"缺少 基金代码 列: {purchase_csv}")
     has_purchase = "申购状态" in df.columns
     has_redemption = "赎回状态" in df.columns
+    # 两列均存在时才按状态过滤；任一缺失则视为未知，保持旧版「全部查询」行为
+    has_status_cols = has_purchase and has_redemption
 
-    records: list[dict[str, str]] = []
+    records: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for _, row in df.iterrows():
-        code = _normalize_code(row.get("基金代码", ""))
+    code_col_idx = df.columns.get_loc("基金代码")
+    purchase_idx = df.columns.get_loc("申购状态") if has_purchase else None
+    redemption_idx = df.columns.get_loc("赎回状态") if has_redemption else None
+
+    for row in df.itertuples(index=False):
+        code = _normalize_code(str(row[code_col_idx]) if code_col_idx is not None else "")
         if not code or code in seen:
             continue
         seen.add(code)
-        purchase_s = str(row.get("申购状态", "")).strip() if has_purchase else ""
-        redemption_s = str(row.get("赎回状态", "")).strip() if has_redemption else ""
-        records.append({"基金编码": code, "申购状态": purchase_s, "赎回状态": redemption_s})
+        purchase_s = str(row[purchase_idx]).strip() if purchase_idx is not None else ""
+        redemption_s = str(row[redemption_idx]).strip() if redemption_idx is not None else ""
+        records.append({
+            "基金编码": code,
+            "申购状态": purchase_s,
+            "赎回状态": redemption_s,
+            "_has_status_cols": has_status_cols,
+        })
     return records
 
 
-def _is_open_for_trade(rec: dict[str, str]) -> bool:
-    """申购状态==开放申购 且 赎回状态==开放赎回 时才查询费率。"""
+# 状态取值规范：申购状态需为「开放申购」、赎回状态需为「开放赎回」才查询费率；「开放」「限大额」等视为非开放
+def _is_open_for_trade(rec: dict[str, Any]) -> bool:
+    """是否应查询费率。
+    需同时满足：申购状态==开放申购、赎回状态==开放赎回（精确匹配，数据源应为东方财富标准取值）。
+    若 purchase_csv 缺失「申购状态」或「赎回状态」列，视为未知，全部查询（兼容旧版）。
+    """
+    if not rec.get("_has_status_cols", False):
+        return True
     return rec.get("申购状态") == "开放申购" and rec.get("赎回状态") == "开放赎回"
 
 

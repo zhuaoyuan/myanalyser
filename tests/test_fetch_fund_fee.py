@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
+import pytest
 
 from fetch_fund_fee import (
     _parse_amount_tier,
@@ -116,13 +117,14 @@ def test_run_with_mocked_akshare(tmp_path: Path) -> None:
     assert "0.00%" in fees
 
 
-def test_run_skip_fee_query_when_not_open(tmp_path: Path) -> None:
-    """申购/赎回非开放时不查费率，输出空费率行；且不调用 akshare。"""
+@pytest.mark.parametrize("csv_content", [
+    "基金代码,基金简称,申购状态,赎回状态\n000999,暂停基金,暂停申购,开放赎回\n",
+    "基金代码,申购状态,赎回状态\n000999,暂停申购,开放赎回\n",
+])
+def test_run_skip_fee_query_when_not_open(tmp_path: Path, csv_content: str) -> None:
+    """申购/赎回非开放时不查费率，输出空费率行；且不调用 akshare（有无基金简称列皆可）。"""
     purchase_csv = tmp_path / "fund_purchase.csv"
-    purchase_csv.write_text(
-        "基金代码,基金简称,申购状态,赎回状态\n000999,暂停基金,暂停申购,开放赎回\n",
-        encoding="utf-8-sig",
-    )
+    purchase_csv.write_text(csv_content, encoding="utf-8-sig")
     output_csv = tmp_path / "fund_fee_structured.csv"
     exception_log = tmp_path / "fund_fee_exceptions.csv"
     logger = logging.getLogger("test")
@@ -143,34 +145,43 @@ def test_run_skip_fee_query_when_not_open(tmp_path: Path) -> None:
     assert all(result["基金编码"] == "000999")
     assert all(result["申购状态"] == "暂停申购") and all(result["赎回状态"] == "开放赎回")
     assert all(result["费率"].fillna("") == "")
+    assert all(result["金额阶梯起点"].fillna("") == "")
 
 
-def test_run_skip_non_open_fund(tmp_path: Path) -> None:
-    """非开放申购/赎回的基金不查费率，结果中费率字段留空。"""
+def test_run_no_status_columns_queries_all(tmp_path: Path) -> None:
+    """缺失申购状态/赎回状态列时，视为未知，全部查询（兼容旧版）。"""
     purchase_csv = tmp_path / "fund_purchase.csv"
     purchase_csv.write_text(
-        "基金代码,申购状态,赎回状态\n000999,暂停申购,开放赎回\n",
+        "基金代码,基金简称\n000306,某基金\n",
         encoding="utf-8-sig",
     )
     output_csv = tmp_path / "fund_fee_structured.csv"
     exception_log = tmp_path / "fund_fee_exceptions.csv"
     logger = logging.getLogger("test")
 
+    purchase_df = pd.DataFrame({
+        "适用金额": ["小于100万元"],
+        "适用期限": ["---"],
+        "原费率": ["0.15%"],
+    })
+    redemption_df = pd.DataFrame({
+        "适用金额": ["---", "---"],
+        "适用期限": ["小于7天", "大于等于7天"],
+        "赎回费率": ["1.50%", "0.00%"],
+    })
+
     call_count = 0
 
     def mock_fund_fee_em(symbol: str, indicator: str):
         nonlocal call_count
         call_count += 1
-        raise AssertionError("不应调用 akshare：非开放基金应跳过查询")
+        return purchase_df if "申购" in indicator else redemption_df
 
     with patch("akshare.fund_fee_em", side_effect=mock_fund_fee_em):
         run(purchase_csv, output_csv, exception_log, logger, request_delay=0)
 
-    assert call_count == 0
+    assert call_count == 2, "无状态列时应查询申购+赎回各 1 次"
     result = pd.read_csv(output_csv, dtype=str, encoding="utf-8-sig")
-    assert len(result) == 2  # 申购费率、赎回费率 各一行
-    assert (result["基金编码"] == "000999").all()
-    assert (result["申购状态"] == "暂停申购").all()
-    assert (result["赎回状态"] == "开放赎回").all()
-    assert (result["费率"].fillna("") == "").all()
-    assert (result["金额阶梯起点"].fillna("") == "").all()
+    assert len(result) >= 3
+    assert all(result["基金编码"] == "000306")
+    assert all(result["申购状态"].fillna("") == "") and all(result["赎回状态"].fillna("") == "")

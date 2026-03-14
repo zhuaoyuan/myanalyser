@@ -26,6 +26,7 @@ from fund_cyrjg import (
     _parse_num,
     _parse_cyrjg_from_content,
     _parse_cyrjg_from_html,
+    _parse_cyrjg_from_markdown,
     fetch_cyrjg_api,
     fund_cyrjg_em,
 )

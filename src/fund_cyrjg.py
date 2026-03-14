@@ -11,14 +11,11 @@
 """
 from __future__ import annotations
 
-import logging
 import re
 
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-
-logger = logging.getLogger(__name__)
 
 # 东方财富请求头，降低被限流/拒绝概率
 DEFAULT_HEADERS = {
@@ -114,6 +111,8 @@ def _parse_cyrjg_from_html(html: str) -> pd.DataFrame:
     if not table:
         return pd.DataFrame()
     headers = [th.get_text(strip=True) for th in table.find_all("th")]
+    if not headers:
+        return pd.DataFrame()
     rows = []
     for tr in table.find_all("tr"):
         cells = [td.get_text(strip=True) for td in tr.find_all("td")]

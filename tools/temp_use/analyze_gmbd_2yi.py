@@ -46,8 +46,7 @@ def task1_fund_reached_then_below(df: pd.DataFrame, threshold: float = 2.0) -> l
         nav = g.sort_values("date")["nav_yi"]
         reached = (nav >= threshold).any()
         below_later = False
-        max_nav = nav.max()
-        if reached and max_nav >= threshold:
+        if reached:
             # 找到首次达到 threshold 的日期
             first_reach_idx = (nav >= threshold).idxmax()
             first_reach_date = g.loc[first_reach_idx, "date"]
@@ -116,9 +115,9 @@ def load_inception_dates(overview_path: Path) -> dict[str, pd.Timestamp]:
     if col not in df.columns:
         raise ValueError(f"未找到成立日期列: {list(df.columns)}")
     out: dict[str, pd.Timestamp] = {}
-    for _, row in df.iterrows():
+    for row in df.to_dict("records"):
         code = str(row["基金代码"]).strip().zfill(6)
-        dt = _parse_foundation_date(row[col])
+        dt = _parse_foundation_date(row.get(col))
         if dt is not None:
             out[code] = dt
     return out
@@ -135,6 +134,8 @@ def task3_survival_with_inception(
     """
     2015～2023年、成立时间>=3年、期末净资产达到2亿的 case 中，
     统计 1年后、3年后 仍在2亿以上的占比。
+
+    语义：1年/3年后取报告期末日期 >= 基准日+n 年的第一条记录（非最近邻）。
     """
     start_d = pd.Timestamp(f"{start_year}-01-01")
     end_d = pd.Timestamp(f"{end_year}-12-31")
@@ -160,8 +161,10 @@ def task3_survival_with_inception(
                 continue
             one_later = d + pd.DateOffset(years=1)
             three_later = d + pd.DateOffset(years=3)
+            # 取目标日期之后的第一条报告（非最近邻）
             f1 = g_full[g_full["date"] >= one_later]
             f3 = g_full[g_full["date"] >= three_later]
+            # 取目标日期之后的第一条报告（非最近邻）
             still_1: bool | None = f1.iloc[0]["nav_yi"] >= threshold if len(f1) > 0 else None
             still_3: bool | None = f3.iloc[0]["nav_yi"] >= threshold if len(f3) > 0 else None
             cases.append((code, d, still_1, still_3))
@@ -215,31 +218,31 @@ def main() -> int:
     else:
         print(f"加载 {len(df)} 条记录，{df['基金代码'].nunique()} 只基金\n")
 
-    # 任务 1
-    codes = task1_fund_reached_then_below(df, args.threshold)
-    print("=" * 60)
-    print("任务 1：期末净资产达到过 2 亿、后来又低于 2 亿的基金")
-    print("=" * 60)
-    print(f"共 {len(codes)} 只")
-    if args.out:
-        Path(args.out).write_text("\n".join(codes), encoding="utf-8")
-        print(f"完整列表已保存至: {args.out}")
-    else:
-        for c in codes[:30]:
-            print(f"  {c}")
-        if len(codes) > 30:
-            print(f"  ... 等共 {len(codes)} 只")
-    print()
+    # 任务 1、2（--task3-only 时跳过）
+    if not args.task3_only:
+        codes = task1_fund_reached_then_below(df, args.threshold)
+        print("=" * 60)
+        print("任务 1：期末净资产达到过 2 亿、后来又低于 2 亿的基金")
+        print("=" * 60)
+        print(f"共 {len(codes)} 只")
+        if args.out:
+            Path(args.out).write_text("\n".join(codes), encoding="utf-8")
+            print(f"完整列表已保存至: {args.out}")
+        else:
+            for c in codes[:30]:
+                print(f"  {c}")
+            if len(codes) > 30:
+                print(f"  ... 等共 {len(codes)} 只")
+        print()
 
-    # 任务 2
-    res = task2_three_year_survival(df, args.threshold, args.cutoff_year)
-    print("=" * 60)
-    time_desc = f"{args.from_year} 年及以后、" if args.from_year else ""
-    print(f"任务 2：{time_desc}2023 年以前期末净资产达到 2 亿的 case，3 年后仍在 2 亿以上的占比")
-    print("=" * 60)
-    print(f"有效 case 数: {res['total']}")
-    print(f"3 年后仍在 2 亿以上: {res['still_above']}")
-    print(f"占比: {res['pct']:.2f}%")
+        res = task2_three_year_survival(df, args.threshold, args.cutoff_year)
+        print("=" * 60)
+        time_desc = f"{args.from_year} 年及以后、" if args.from_year else ""
+        print(f"任务 2：{time_desc}2023 年以前期末净资产达到 2 亿的 case，3 年后仍在 2 亿以上的占比")
+        print("=" * 60)
+        print(f"有效 case 数: {res['total']}")
+        print(f"3 年后仍在 2 亿以上: {res['still_above']}")
+        print(f"占比: {res['pct']:.2f}%")
 
     # 任务 3：2015～2023年、成立>=3年、达2亿的 case，1年/3年后占比
     if args.overview:

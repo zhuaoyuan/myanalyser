@@ -50,7 +50,7 @@ def main() -> int:
     parser.add_argument(
         "-i", "--input-csv",
         type=Path,
-        help="从 CSV 读取基金代码列（列名默认 基金代码）",
+        help="从 CSV 读取基金代码列；若同时指定 codes，则以 CSV 为准",
     )
     parser.add_argument(
         "-o", "--output",

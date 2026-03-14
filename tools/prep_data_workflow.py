@@ -1,0 +1,405 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+预备数据工作流：从指定日期起，拉取并筛选基金预备数据。
+
+流程：
+1. 获取全体基金购买 (x)
+2. 根据 x 获取持有人比例全历史 (a)
+3. 根据 x 获取基金规模全历史 (b)
+4. 根据 x 获取基金费率全历史 (c)
+5. 根据 c 进行基金分类 (c.1)
+6. 根据 x 获取全体基金详情 (e)
+7. 筛选：x + c.1(存在) + a(未出现机构持有>60%) + b(曾规模>2亿) + e(date前成立) -> d.1
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import pandas as pd
+
+# 项目路径：tools 父级为 myanalyser
+_TOOLS_DIR = Path(__file__).resolve().parent
+_MYANALYSER = _TOOLS_DIR.parent
+if str(_MYANALYSER / "src") not in sys.path:
+    sys.path.insert(0, str(_MYANALYSER / "src"))
+
+
+def _safe_code(v: object) -> str:
+    return str(v).strip().zfill(6)
+
+
+def _parse_date(text: object) -> pd.Timestamp | None:
+    """解析日期，支持 2013年03月20日、YYYY-MM-DD 等格式。"""
+    if text is None or (isinstance(text, float) and pd.isna(text)):
+        return None
+    s = str(text).strip()
+    if not s or s == "---":
+        return None
+    zh = re.search(r"(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日", s)
+    if zh:
+        y, m, d = zh.groups()
+        return pd.to_datetime(f"{y}-{int(m):02d}-{int(d):02d}", errors="coerce")
+    num = re.search(r"\d{4}[-/]\d{2}[-/]\d{2}", s)
+    if num:
+        return pd.to_datetime(num.group(0), errors="coerce")
+    return pd.to_datetime(s, errors="coerce")
+
+
+def _parse_pct(val: object) -> float | None:
+    """解析百分比，如 63.45% -> 63.45。"""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return None
+    s = str(val).strip()
+    if not s or s == "---":
+        return None
+    m = re.match(r"([\d.]+)\s*%", s)
+    return float(m[1]) if m else None
+
+
+def _run_cli(script: str, args: list[str], logger: logging.Logger) -> bool:
+    """执行 CLI 脚本，返回是否成功。"""
+    cmd = [sys.executable, str(_TOOLS_DIR / script)] + [str(a) for a in args]
+    logger.info("执行: %s", " ".join(cmd))
+    ret = subprocess.run(cmd, capture_output=True, text=True, cwd=_MYANALYSER.parent)
+    if ret.returncode != 0:
+        logger.error("退出码 %d: %s", ret.returncode, ret.stderr or ret.stdout)
+        return False
+    return True
+
+
+def _step1_purchase(work_dir: Path, logger: logging.Logger) -> pd.DataFrame:
+    """获取全体基金购买 x。"""
+    from fund_etl import run_step1_purchase
+
+    out = work_dir / "fund_purchase.csv"
+    df = run_step1_purchase(out)
+    logger.info("[step1] 基金购买 %d 行 -> %s", len(df), out)
+    return df
+
+
+def _step_a_cyrjg(
+    purchase_csv: Path,
+    work_dir: Path,
+    existing_csv: Path | None,
+    delay: float,
+    logger: logging.Logger,
+) -> Path:
+    """获取持有人比例全历史 a。若 existing_csv 传入则直接使用。"""
+    if existing_csv and existing_csv.exists():
+        logger.info("[a] 使用已有持有人比例: %s", existing_csv)
+        return existing_csv
+
+    out = work_dir / "fund_cyrjg.csv"
+    ok = _run_cli(
+        "fetch_fund_cyrjg.py",
+        ["-i", str(purchase_csv), "-o", str(out), "--delay", str(delay)],
+        logger,
+    )
+    if not ok or not out.exists():
+        raise FileNotFoundError("持有人比例抓取失败")
+    return out
+
+
+def _step_b_gmbd(
+    purchase_csv: Path,
+    work_dir: Path,
+    existing_csv: Path | None,
+    delay: float,
+    logger: logging.Logger,
+) -> Path:
+    """获取基金规模全历史 b。若 existing 传入则合并增量。"""
+    codes_df = pd.read_csv(purchase_csv, dtype={"基金代码": str})
+    codes = set(codes_df["基金代码"].dropna().map(_safe_code).tolist())
+
+    if existing_csv and existing_csv.exists():
+        existing = pd.read_csv(existing_csv, dtype=str, encoding="utf-8-sig")
+        if "基金代码" in existing.columns:
+            done_codes = set(existing["基金代码"].dropna().map(_safe_code).tolist())
+            to_fetch = sorted(codes - done_codes)
+        else:
+            to_fetch = sorted(codes)
+    else:
+        existing = None
+        to_fetch = sorted(codes)
+
+    out = work_dir / "fund_gmbd.csv"
+    if to_fetch:
+        tmp_purchase = work_dir / "_tmp_gmbd_purchase.csv"
+        tmp_df = pd.DataFrame({"基金代码": to_fetch})
+        tmp_df.to_csv(tmp_purchase, index=False, encoding="utf-8-sig")
+        ok = _run_cli(
+            "fetch_fund_gmbd.py",
+            ["-i", str(tmp_purchase), "-o", str(out), "--delay", str(delay)],
+            logger,
+        )
+        if not ok:
+            raise RuntimeError("基金规模抓取失败")
+        fetched = pd.read_csv(out, dtype=str, encoding="utf-8-sig") if out.exists() else pd.DataFrame()
+        if existing is not None and not fetched.empty:
+            merged = pd.concat([existing, fetched], ignore_index=True)
+            merged.to_csv(out, index=False, encoding="utf-8-sig")
+        elif existing is not None:
+            existing.to_csv(out, index=False, encoding="utf-8-sig")
+    elif existing is not None:
+        existing.to_csv(out, index=False, encoding="utf-8-sig")
+    else:
+        pd.DataFrame().to_csv(out, index=False, encoding="utf-8-sig")
+
+    logger.info("[b] 基金规模 -> %s", out)
+    return out
+
+
+def _step_c_fee(
+    purchase_csv: Path,
+    work_dir: Path,
+    existing_csv: Path | None,
+    delay: float,
+    logger: logging.Logger,
+) -> Path:
+    """获取基金费率全历史 c。若 existing 传入则合并增量。"""
+    codes_df = pd.read_csv(purchase_csv, dtype=str)
+    codes = set(codes_df["基金代码"].dropna().map(_safe_code).tolist())
+
+    if existing_csv and existing_csv.exists():
+        existing = pd.read_csv(existing_csv, dtype=str, encoding="utf-8-sig")
+        code_col = "基金编码" if "基金编码" in existing.columns else "基金代码"
+        done_codes = set(existing[code_col].dropna().map(_safe_code).tolist())
+        to_fetch = sorted(codes - done_codes)
+    else:
+        existing = None
+        to_fetch = None
+
+    out = work_dir / "fund_fee_structured.csv"
+    if to_fetch is not None and len(to_fetch) == 0:
+        logger.info("[c] 费率已完整，复用 %s", existing_csv)
+        existing.to_csv(out, index=False, encoding="utf-8-sig")
+        return out
+
+    purchase_for_fee = purchase_csv
+    if to_fetch is not None and to_fetch:
+        tmp_purchase = work_dir / "_tmp_fee_purchase.csv"
+        sub = codes_df[codes_df["基金代码"].map(_safe_code).isin(to_fetch)]
+        sub.to_csv(tmp_purchase, index=False, encoding="utf-8-sig")
+        purchase_for_fee = tmp_purchase
+
+    ok = _run_cli(
+        "fetch_fund_fee.py",
+        [str(purchase_for_fee), "-o", str(out), "--delay", str(delay)],
+        logger,
+    )
+    if not ok:
+        raise RuntimeError("基金费率抓取失败")
+
+    if existing is not None and out.exists():
+        fetched = pd.read_csv(out, dtype=str, encoding="utf-8-sig")
+        code_col = "基金编码" if "基金编码" in existing.columns else "基金代码"
+        merged = pd.concat([existing, fetched], ignore_index=True)
+        merged.to_csv(out, index=False, encoding="utf-8-sig")
+
+    logger.info("[c] 基金费率 -> %s", out)
+    return out
+
+
+def _step_c1_filter_fee(fee_csv: Path, work_dir: Path, logger: logging.Logger) -> Path:
+    """根据费率进行基金分类 c.1。"""
+    out = work_dir / "fund_fee_filtered.csv"
+    ok = _run_cli("filter_fund_fee_by_holding.py", [str(fee_csv), "-o", str(out)], logger)
+    if not ok:
+        raise RuntimeError("基金费率分类失败")
+    logger.info("[c.1] 基金分类 -> %s", out)
+    return out
+
+
+def _step_e_overview(
+    purchase_csv: Path,
+    work_dir: Path,
+    existing_csv: Path | None,
+    logger: logging.Logger,
+) -> Path:
+    """获取全体基金详情 e。run_step2_overview 本身支持增量。"""
+    import shutil
+
+    from fund_etl import RetryConfig, run_step2_overview
+
+    out = work_dir / "fund_overview.csv"
+    fail_log = work_dir / "failed_overview.jsonl"
+    retry_cfg = RetryConfig()
+    if existing_csv and existing_csv.exists():
+        shutil.copy2(existing_csv, out)
+        logger.info("[e] 从已有文件初始化: %s", existing_csv)
+    summary = run_step2_overview(
+        purchase_csv=purchase_csv,
+        overview_csv=out,
+        fail_log=fail_log,
+        retry_cfg=retry_cfg,
+    )
+    logger.info("[e] 基金详情 %s -> %s", summary, out)
+    return out
+
+
+def _apply_filters(
+    purchase_df: pd.DataFrame,
+    date_str: str,
+    cyrjg_csv: Path,
+    gmbd_csv: Path,
+    fee_filtered_csv: Path,
+    overview_csv: Path,
+    logger: logging.Logger,
+) -> pd.DataFrame:
+    """应用筛选条件，得到 d.1。"""
+    date_ts = pd.to_datetime(date_str)
+    codes = set(purchase_df["基金代码"].dropna().map(_safe_code).tolist())
+
+    # c.1: 必须在 c.1 中存在
+    if fee_filtered_csv.exists():
+        c1_df = pd.read_csv(fee_filtered_csv, dtype=str)
+        code_col = "基金编码" if "基金编码" in c1_df.columns else "基金代码"
+        c1_codes = set(c1_df[code_col].dropna().map(_safe_code).tolist())
+        codes &= c1_codes
+        logger.info("[筛选] c.1 后 %d", len(codes))
+    else:
+        logger.warning("c.1 文件不存在，跳过该条件")
+
+    # a: 排除 date 至今出现过机构持有比例 > 60% 的基金
+    if cyrjg_csv.exists():
+        a_df = pd.read_csv(cyrjg_csv, dtype=str)
+        date_col = "日期" if "日期" in a_df.columns else "公告日期"
+        a_df = a_df.copy()
+        a_df[date_col] = pd.to_datetime(a_df[date_col], errors="coerce")
+        a_df = a_df[a_df[date_col] >= date_ts]
+        exclude_a: set[str] = set()
+        for _, row in a_df.iterrows():
+            pct = _parse_pct(row.get("机构持有比例"))
+            if pct is not None and pct > 60:
+                exclude_a.add(_safe_code(row.get("基金代码", "")))
+        codes -= exclude_a
+        logger.info("[筛选] a(无机构>60%%) 后 %d，排除 %d", len(codes), len(exclude_a))
+    else:
+        logger.warning("a 文件不存在，跳过该条件")
+
+    # b: 仅保留 date 至今发生过规模 > 2亿 的基金
+    if gmbd_csv.exists():
+        b_df = pd.read_csv(gmbd_csv, dtype=str)
+        b_df["日期"] = pd.to_datetime(b_df["日期"], errors="coerce")
+        b_df = b_df[b_df["日期"] >= date_ts]
+        scale_col = "期末净资产（亿元）"
+        if scale_col in b_df.columns:
+            b_df["_scale"] = pd.to_numeric(b_df[scale_col], errors="coerce")
+            include_b = set(b_df[b_df["_scale"] > 2]["基金代码"].dropna().map(_safe_code).tolist())
+            codes &= include_b
+            logger.info("[筛选] b(规模>2亿) 后 %d", len(codes))
+    else:
+        logger.warning("b 文件不存在，跳过该条件")
+
+    # e: 仅保留 date 之前成立的基金（无法解析成立日期的排除）
+    if overview_csv.exists():
+        e_df = pd.read_csv(overview_csv, dtype=str)
+        col = "成立日期/规模" if "成立日期/规模" in e_df.columns else "成立日期"
+        if col in e_df.columns:
+            include_e: set[str] = set()
+            for _, row in e_df.iterrows():
+                code = _safe_code(row.get("基金代码", ""))
+                inc_dt = _parse_date(row.get(col))
+                if inc_dt is not None and not pd.isna(inc_dt) and inc_dt < date_ts:
+                    include_e.add(code)
+            codes &= include_e
+            logger.info("[筛选] e(date前成立) 后 %d", len(codes))
+    else:
+        logger.warning("e 文件不存在，跳过该条件")
+
+    result = purchase_df[purchase_df["基金代码"].map(_safe_code).isin(codes)].copy()
+    return result
+
+
+def run(
+    date_str: str,
+    output_path: Path,
+    work_dir: Path,
+    *,
+    purchase_csv: Path | None = None,
+    cyrjg_csv: Path | None = None,
+    gmbd_csv: Path | None = None,
+    fee_csv: Path | None = None,
+    overview_csv: Path | None = None,
+    delay: float = 0.3,
+    logger: logging.Logger | None = None,
+) -> Path:
+    """执行预备数据工作流。"""
+    log = logger or logging.getLogger(__name__)
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. x
+    if purchase_csv and purchase_csv.exists():
+        x_df = pd.read_csv(purchase_csv, dtype=str)
+        x_path = work_dir / "fund_purchase.csv"
+        x_df.to_csv(x_path, index=False, encoding="utf-8-sig")
+        log.info("[x] 使用已有购买: %s", purchase_csv)
+    else:
+        x_df = _step1_purchase(work_dir, log)
+        x_path = work_dir / "fund_purchase.csv"
+
+    # 2–4. a, b, c
+    a_path = _step_a_cyrjg(x_path, work_dir, cyrjg_csv, delay, log)
+    b_path = _step_b_gmbd(x_path, work_dir, gmbd_csv, delay, log)
+    c_path = _step_c_fee(x_path, work_dir, fee_csv, delay, log)
+
+    # 5. c.1
+    c1_path = _step_c1_filter_fee(c_path, work_dir, log)
+
+    # 6. e
+    e_path = _step_e_overview(x_path, work_dir, overview_csv, log)
+
+    # 7. 筛选 -> d.1
+    d1_df = _apply_filters(x_df, date_str, a_path, b_path, c1_path, e_path, log)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    d1_df.to_csv(output_path, index=False, encoding="utf-8-sig")
+    log.info("[d.1] 最终结果 %d 行 -> %s", len(d1_df), output_path)
+    return output_path
+
+
+def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    logger = logging.getLogger(__name__)
+
+    parser = argparse.ArgumentParser(description="预备数据工作流：从指定日期起拉取并筛选基金预备数据")
+    parser.add_argument("--date", required=True, help="筛选起始日期，格式 YYYY-MM-DD")
+    parser.add_argument("-o", "--output", type=Path, required=True, help="最终结果文件路径 (d.1)")
+    parser.add_argument("--work-dir", type=Path, default=None, help="工作目录，默认与 output 同目录下的 prep_work")
+    parser.add_argument("--purchase-csv", type=Path, default=None, help="已有基金购买 CSV，传入则跳过 step1")
+    parser.add_argument("--cyrjg-csv", type=Path, default=None, help="已有持有人比例 CSV，传入则直接使用")
+    parser.add_argument("--gmbd-csv", type=Path, default=None, help="已有规模 CSV，传入则增量查询")
+    parser.add_argument("--fee-csv", type=Path, default=None, help="已有费率 CSV，传入则增量查询")
+    parser.add_argument("--overview-csv", type=Path, default=None, help="已有基金详情 CSV，传入则增量查询")
+    parser.add_argument("--delay", type=float, default=0.3, help="请求间隔秒数")
+    args = parser.parse_args()
+
+    output_path = args.output.resolve()
+    work_dir = args.work_dir.resolve() if args.work_dir else output_path.parent / "prep_work"
+
+    try:
+        run(
+            date_str=args.date,
+            output_path=output_path,
+            work_dir=work_dir,
+            purchase_csv=args.purchase_csv.resolve() if args.purchase_csv else None,
+            cyrjg_csv=args.cyrjg_csv.resolve() if args.cyrjg_csv else None,
+            gmbd_csv=args.gmbd_csv.resolve() if args.gmbd_csv else None,
+            fee_csv=args.fee_csv.resolve() if args.fee_csv else None,
+            overview_csv=args.overview_csv.resolve() if args.overview_csv else None,
+            delay=args.delay,
+            logger=logger,
+        )
+        return 0
+    except Exception as e:
+        logger.exception("%s", e)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

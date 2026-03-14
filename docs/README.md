@@ -17,7 +17,8 @@ myanalyser/
     samples/  # 小样本数据
   artifacts/  # 预留目录（运行产物）
   docs/       # 文档
-  tools/      # 一次性脚本
+  tools/      # 工具脚本
+    temp_use/  # 一次性脚本
 ```
 
 ## 数据目录约定
@@ -45,6 +46,7 @@ myanalyser/
 - `src/backtest_portfolio.py`：按规则回测组合
 - `src/fund_gmbd.py`：基金规模变动数据抓取（东方财富 FundArchivesDatas API，akshare 风格 `fund_gmbd_em(code)`）；CLI `tools/fetch_fund_gmbd.py`
 - `src/fund_cyrjg.py`：基金持有人结构数据抓取（东方财富 FundArchivesDatas API，akshare 风格 `fund_cyrjg_em(code)`）；CLI `tools/fetch_fund_cyrjg.py`
+- `tools/prep_data_workflow.py`：**预备数据工作流**，从指定日期起拉取并筛选基金预备数据（购买 x → 持有人比例 a、规模 b、费率 c → 基金分类 c.1 → 详情 e → 多条件筛选 d.1）；支持已有 CSV 增量复用
 - `src/verify_scoreboard_recalc.py`：榜单指标独立重算核验（从 fund_etl 中间数据重算并与导出榜单比对，支持 `--latest-nav-date`）
 - `src/contracts/pipeline_contracts.py`：关键中间产物契约（列名/类型/非空/唯一键、目录 CSV 文件数量）
 - `src/validators/validate_pipeline_artifacts.py`：按 stage 执行契约校验（失败返回非 0）

@@ -63,8 +63,12 @@ def _parse_pct(val: object) -> float | None:
 
 
 def _run_cli(script: str, args: list[str], logger: logging.Logger) -> bool:
-    """执行 CLI 脚本，返回是否成功。"""
-    cmd = [sys.executable, str(_TOOLS_DIR / script)] + [str(a) for a in args]
+    """执行 CLI 脚本，返回是否成功。
+
+    cwd 设为 myanalyser 父目录（工作区根），子脚本路径使用绝对路径，保证任意工作目录下调用均可靠。
+    """
+    script_path = (_MYANALYSER / "tools" / script).resolve()
+    cmd = [sys.executable, str(script_path)] + [str(a) for a in args]
     logger.info("执行: %s", " ".join(cmd))
     ret = subprocess.run(cmd, capture_output=True, text=True, cwd=_MYANALYSER.parent)
     if ret.returncode != 0:
@@ -143,6 +147,8 @@ def _step_b_gmbd(
         fetched = pd.read_csv(out, dtype=str, encoding="utf-8-sig") if out.exists() else pd.DataFrame()
         if existing is not None and not fetched.empty:
             merged = pd.concat([existing, fetched], ignore_index=True)
+            if "基金代码" in merged.columns and "日期" in merged.columns:
+                merged = merged.drop_duplicates(subset=["基金代码", "日期"], keep="first")
             merged.to_csv(out, index=False, encoding="utf-8-sig")
         elif existing is not None:
             existing.to_csv(out, index=False, encoding="utf-8-sig")
@@ -173,16 +179,20 @@ def _step_c_fee(
         to_fetch = sorted(codes - done_codes)
     else:
         existing = None
-        to_fetch = None
+        to_fetch = sorted(codes) if codes else []
 
     out = work_dir / "fund_fee_structured.csv"
-    if to_fetch is not None and len(to_fetch) == 0:
-        logger.info("[c] 费率已完整，复用 %s", existing_csv)
-        existing.to_csv(out, index=False, encoding="utf-8-sig")
+    if not to_fetch:
+        if existing is not None:
+            logger.info("[c] 费率已完整，复用 %s", existing_csv)
+            existing.to_csv(out, index=False, encoding="utf-8-sig")
+            return out
+        pd.DataFrame().to_csv(out, index=False, encoding="utf-8-sig")
+        logger.info("[c] 基金列表为空，跳过费率抓取")
         return out
 
     purchase_for_fee = purchase_csv
-    if to_fetch is not None and to_fetch:
+    if to_fetch:
         tmp_purchase = work_dir / "_tmp_fee_purchase.csv"
         sub = codes_df[codes_df["基金代码"].map(_safe_code).isin(to_fetch)]
         sub.to_csv(tmp_purchase, index=False, encoding="utf-8-sig")
@@ -273,11 +283,9 @@ def _apply_filters(
         a_df = a_df.copy()
         a_df[date_col] = pd.to_datetime(a_df[date_col], errors="coerce")
         a_df = a_df[a_df[date_col] >= date_ts]
-        exclude_a: set[str] = set()
-        for _, row in a_df.iterrows():
-            pct = _parse_pct(row.get("机构持有比例"))
-            if pct is not None and pct > 60:
-                exclude_a.add(_safe_code(row.get("基金代码", "")))
+        a_df["_pct"] = a_df["机构持有比例"].map(_parse_pct)
+        exclude_rows = a_df[a_df["_pct"].notna() & (a_df["_pct"] > 60)]
+        exclude_a = set(exclude_rows["基金代码"].dropna().map(_safe_code))
         codes -= exclude_a
         logger.info("[筛选] a(无机构>60%%) 后 %d，排除 %d", len(codes), len(exclude_a))
     else:
@@ -302,12 +310,9 @@ def _apply_filters(
         e_df = pd.read_csv(overview_csv, dtype=str)
         col = "成立日期/规模" if "成立日期/规模" in e_df.columns else "成立日期"
         if col in e_df.columns:
-            include_e: set[str] = set()
-            for _, row in e_df.iterrows():
-                code = _safe_code(row.get("基金代码", ""))
-                inc_dt = _parse_date(row.get(col))
-                if inc_dt is not None and not pd.isna(inc_dt) and inc_dt < date_ts:
-                    include_e.add(code)
+            e_df["_inc_dt"] = e_df[col].map(_parse_date)
+            include_rows = e_df[e_df["_inc_dt"].notna() & (e_df["_inc_dt"] < date_ts)]
+            include_e = set(include_rows["基金代码"].dropna().map(_safe_code))
             codes &= include_e
             logger.info("[筛选] e(date前成立) 后 %d", len(codes))
     else:
@@ -380,7 +385,7 @@ def main() -> int:
     args = parser.parse_args()
 
     output_path = args.output.resolve()
-    work_dir = args.work_dir.resolve() if args.work_dir else output_path.parent / "prep_work"
+    work_dir = (args.work_dir or output_path.parent / "prep_work").resolve()
 
     try:
         run(

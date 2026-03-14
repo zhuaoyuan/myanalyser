@@ -85,9 +85,14 @@ def main() -> int:
         print("\n请指定基金编码或 -i CSV 文件", file=sys.stderr)
         return 1
 
+    total = len(codes)
+    step = max(1, min(100, total // 20))  # 每 100 条或约 5% 打印一次
     dfs: list[tuple[str, pd.DataFrame]] = []
     failed: list[str] = []
     for i, code in enumerate(codes):
+        if (i + 1) % step == 0 or i == 0 or (i + 1) == total:
+            pct = int(100 * (i + 1) / total)
+            print(f"  [cyrjg] 进度 {i + 1}/{total} ({pct}%)", file=sys.stderr)
         try:
             df = fund_cyrjg_em(code)
             if not df.empty:

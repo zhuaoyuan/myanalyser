@@ -4,8 +4,9 @@
 临时脚本：从 fund_fee_complete.csv 筛选符合条件的基金并分类。
 
 条件：
-1. 忽略 申购状态!=开放申购 或 赎回状态!=开放赎回 的数据
-2. A类：赎回费率在持仓期限 [x,∞) 时为 0 的，按 x 归类：
+1. 保留 申购状态=开放申购 且 赎回状态=开放赎回 的数据；或 申购状态=场内交易 且 赎回状态=场内交易 的数据
+2. 场内交易：申购状态=场内交易 且 赎回状态=场内交易 → 类型记为「场内交易」
+3. A类：赎回费率在持仓期限 [x,∞) 时为 0 的，按 x 归类：
    x<=30 → A类30天, 30<x<=60 → A类60天, 60<x<=180 → A类180天, 180<x<=365 → A类365天, 365<x<=730 → A类730天
    取最小金额阶梯的申购费率，赎回费率=0
 3. C类：金额阶梯为空白或0时申购费率=0，且赎回费率=0的持仓期限 [x,∞)，按 x 归类：
@@ -78,18 +79,41 @@ def _classify_c_by_x(x: float) -> str | None:
 
 def run(input_csv: Path, output_csv: Path) -> None:
     df = pd.read_csv(input_csv, dtype=str, encoding="utf-8-sig")
-    # 仅保留开放申购+开放赎回
-    df = df[
+    # 保留：开放申购+开放赎回 或 场内交易+场内交易
+    open_mask = (
         (df["申购状态"].fillna("").str.strip() == "开放申购")
         & (df["赎回状态"].fillna("").str.strip() == "开放赎回")
-    ]
+    )
+    etf_mask = (
+        (df["申购状态"].fillna("").str.strip() == "场内交易")
+        & (df["赎回状态"].fillna("").str.strip() == "场内交易")
+    )
+    df = df[open_mask | etf_mask]
 
     # 按基金分组
     codes = df["基金编码"].drop_duplicates().tolist()
+    total = len(codes)
+    step = max(1, min(200, total // 20))  # 每 200 条或约 5% 打印一次
     results: list[dict[str, Any]] = []
 
-    for code in codes:
+    for idx, code in enumerate(codes):
+        if (idx + 1) % step == 0 or idx == 0 or (idx + 1) == total:
+            pct = int(100 * (idx + 1) / total)
+            print(f"  [c.1] 进度 {idx + 1}/{total} ({pct}%)", file=sys.stderr)
         sub = df[df["基金编码"] == code]
+        pur_status = sub["申购状态"].fillna("").str.strip().iloc[0] if len(sub) > 0 else ""
+        red_status = sub["赎回状态"].fillna("").str.strip().iloc[0] if len(sub) > 0 else ""
+
+        # 场内交易：申购状态与赎回状态均为场内交易
+        if pur_status == "场内交易" and red_status == "场内交易":
+            results.append({
+                "类型": "场内交易",
+                "基金编码": code,
+                "申购费率": "-",
+                "赎回费率": "-",
+            })
+            continue
+
         purchase_rows = sub[sub["数据类型"] == "申购费率"]
         redemption_rows = sub[sub["数据类型"] == "赎回费率"]
 

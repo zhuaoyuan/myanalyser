@@ -62,17 +62,19 @@ def _parse_pct(val: object) -> float | None:
     return float(m[1]) if m else None
 
 
-def _run_cli(script: str, args: list[str], logger: logging.Logger) -> bool:
+def _run_cli(script: str, args: list[str], logger: logging.Logger, stream_output: bool = True) -> bool:
     """执行 CLI 脚本，返回是否成功。
 
     cwd 设为 myanalyser 父目录（工作区根），子脚本路径使用绝对路径，保证任意工作目录下调用均可靠。
+    stream_output=True 时子进程 stdout/stderr 直接输出到终端，便于查看实时进度。
     """
     script_path = (_MYANALYSER / "tools" / script).resolve()
     cmd = [sys.executable, str(script_path)] + [str(a) for a in args]
     logger.info("执行: %s", " ".join(cmd))
-    ret = subprocess.run(cmd, capture_output=True, text=True, cwd=_MYANALYSER.parent)
+    ret = subprocess.run(cmd, capture_output=not stream_output, text=True, cwd=_MYANALYSER.parent)
     if ret.returncode != 0:
-        logger.error("退出码 %d: %s", ret.returncode, ret.stderr or ret.stdout)
+        err_msg = (ret.stderr or ret.stdout or "") if not stream_output else "（请查看上方子进程输出）"
+        logger.error("退出码 %d: %s", ret.returncode, err_msg)
         return False
     return True
 
@@ -81,9 +83,10 @@ def _step1_purchase(work_dir: Path, logger: logging.Logger) -> pd.DataFrame:
     """获取全体基金购买 x。"""
     from fund_etl import run_step1_purchase
 
+    logger.info("[x] 开始获取基金购买列表")
     out = work_dir / "fund_purchase.csv"
     df = run_step1_purchase(out)
-    logger.info("[step1] 基金购买 %d 行 -> %s", len(df), out)
+    logger.info("[x] 完成 基金购买 %d 行 -> %s", len(df), out)
     return df
 
 
@@ -99,6 +102,8 @@ def _step_a_cyrjg(
         logger.info("[a] 使用已有持有人比例: %s", existing_csv)
         return existing_csv
 
+    n_codes = len(pd.read_csv(purchase_csv, dtype={"基金代码": str})["基金代码"].dropna().unique())
+    logger.info("[a] 开始抓取持有人比例，共 %d 只基金", n_codes)
     out = work_dir / "fund_cyrjg.csv"
     ok = _run_cli(
         "fetch_fund_cyrjg.py",
@@ -107,6 +112,7 @@ def _step_a_cyrjg(
     )
     if not ok or not out.exists():
         raise FileNotFoundError("持有人比例抓取失败")
+    logger.info("[a] 完成 持有人比例 -> %s", out)
     return out
 
 
@@ -134,6 +140,11 @@ def _step_b_gmbd(
 
     out = work_dir / "fund_gmbd.csv"
     if to_fetch:
+        if existing is not None and "基金代码" in existing.columns:
+            done_codes = set(existing["基金代码"].dropna().map(_safe_code).tolist())
+            logger.info("[b] 开始抓取基金规模，待抓取 %d 只，已有 %d 只", len(to_fetch), len(done_codes))
+        else:
+            logger.info("[b] 开始抓取基金规模，共 %d 只", len(to_fetch))
         tmp_purchase = work_dir / "_tmp_gmbd_purchase.csv"
         tmp_df = pd.DataFrame({"基金代码": to_fetch})
         tmp_df.to_csv(tmp_purchase, index=False, encoding="utf-8-sig")
@@ -157,7 +168,7 @@ def _step_b_gmbd(
     else:
         pd.DataFrame().to_csv(out, index=False, encoding="utf-8-sig")
 
-    logger.info("[b] 基金规模 -> %s", out)
+    logger.info("[b] 完成 基金规模 -> %s", out)
     return out
 
 
@@ -193,6 +204,7 @@ def _step_c_fee(
 
     purchase_for_fee = purchase_csv
     if to_fetch:
+        logger.info("[c] 开始抓取基金费率，待抓取 %d 只（已有 %d 只）", len(to_fetch), len(codes) - len(to_fetch) if existing else 0)
         tmp_purchase = work_dir / "_tmp_fee_purchase.csv"
         sub = codes_df[codes_df["基金代码"].map(_safe_code).isin(to_fetch)]
         sub.to_csv(tmp_purchase, index=False, encoding="utf-8-sig")
@@ -212,17 +224,19 @@ def _step_c_fee(
         merged = pd.concat([existing, fetched], ignore_index=True)
         merged.to_csv(out, index=False, encoding="utf-8-sig")
 
-    logger.info("[c] 基金费率 -> %s", out)
+    logger.info("[c] 完成 基金费率 -> %s", out)
     return out
 
 
 def _step_c1_filter_fee(fee_csv: Path, work_dir: Path, logger: logging.Logger) -> Path:
     """根据费率进行基金分类 c.1。"""
+    n_rows = len(pd.read_csv(fee_csv, dtype=str)) if fee_csv.exists() else 0
+    logger.info("[c.1] 开始基金费率分类，输入 %d 行", n_rows)
     out = work_dir / "fund_fee_filtered.csv"
     ok = _run_cli("filter_fund_fee_by_holding.py", [str(fee_csv), "-o", str(out)], logger)
     if not ok:
         raise RuntimeError("基金费率分类失败")
-    logger.info("[c.1] 基金分类 -> %s", out)
+    logger.info("[c.1] 完成 基金分类 -> %s", out)
     return out
 
 
@@ -243,13 +257,15 @@ def _step_e_overview(
     if existing_csv and existing_csv.exists():
         shutil.copy2(existing_csv, out)
         logger.info("[e] 从已有文件初始化: %s", existing_csv)
+    n_codes = len(pd.read_csv(purchase_csv, dtype=str)["基金代码"].dropna().unique())
+    logger.info("[e] 开始获取基金详情，共 %d 只基金（run_step2_overview 将按增量打印进度）", n_codes)
     summary = run_step2_overview(
         purchase_csv=purchase_csv,
         overview_csv=out,
         fail_log=fail_log,
         retry_cfg=retry_cfg,
     )
-    logger.info("[e] 基金详情 %s -> %s", summary, out)
+    logger.info("[e] 完成 基金详情 %s -> %s", summary, out)
     return out
 
 
@@ -263,6 +279,7 @@ def _apply_filters(
     logger: logging.Logger,
 ) -> pd.DataFrame:
     """应用筛选条件，得到 d.1。"""
+    logger.info("[d.1] 开始应用筛选条件，起始日期 %s，候选 %d 只", date_str, len(set(purchase_df["基金代码"].dropna().map(_safe_code).tolist())))
     date_ts = pd.to_datetime(date_str)
     codes = set(purchase_df["基金代码"].dropna().map(_safe_code).tolist())
 
@@ -319,6 +336,7 @@ def _apply_filters(
         logger.warning("e 文件不存在，跳过该条件")
 
     result = purchase_df[purchase_df["基金代码"].map(_safe_code).isin(codes)].copy()
+    logger.info("[d.1] 完成筛选，剩余 %d 只", len(result))
     return result
 
 
@@ -381,7 +399,7 @@ def main() -> int:
     parser.add_argument("--gmbd-csv", type=Path, default=None, help="已有规模 CSV，传入则增量查询")
     parser.add_argument("--fee-csv", type=Path, default=None, help="已有费率 CSV，传入则增量查询")
     parser.add_argument("--overview-csv", type=Path, default=None, help="已有基金详情 CSV，传入则增量查询")
-    parser.add_argument("--delay", type=float, default=0.3, help="请求间隔秒数")
+    parser.add_argument("--delay", type=float, default=0.1, help="请求间隔秒数")
     args = parser.parse_args()
 
     output_path = args.output.resolve()

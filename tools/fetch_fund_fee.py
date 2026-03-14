@@ -154,6 +154,10 @@ _PERIOD_PATTERNS = [
     (re.compile(r"大于等于\s*([\d.]+)\s*天\s*[，,]\s*小于\s*([\d.]+)\s*年"), lambda m: (float(m[1]), float(m[2]) * 365)),
     # 大于等于X年，小于Y年
     (re.compile(r"大于等于\s*([\d.]+)\s*年\s*[，,]\s*小于\s*([\d.]+)\s*年"), lambda m: (float(m[1]) * 365, float(m[2]) * 365)),
+    # 大于X年，小于等于Y年（需在「大于X年」无上限前，避免部分匹配）
+    (re.compile(r"大于\s*([\d.]+)\s*年\s*[，,]\s*小于等于\s*([\d.]+)\s*年"), lambda m: (float(m[1]) * 365, float(m[2]) * 365)),
+    # 大于X年（无上限）
+    (re.compile(r"大于\s*([\d.]+)\s*年"), lambda m: (float(m[1]) * 365, None)),
     # 小于等于X天
     (re.compile(r"小于等于\s*([\d.]+)\s*天"), lambda m: (0.0, float(m[1]))),
     # 大于等于X天（无上限）
@@ -362,8 +366,8 @@ def run(
         purchase_status = rec.get("申购状态", "")
         redemption_status = rec.get("赎回状态", "")
 
-        if (i + 1) % 50 == 0 or i == 0:
-            logger.info("处理进度 %d/%d", i + 1, len(records))
+        if (i + 1) % 50 == 0 or i == 0 or (i + 1) == len(records):
+            logger.info("[c] 处理进度 %d/%d (%d%%)", i + 1, len(records), int(100 * (i + 1) / len(records)))
 
         if not _is_open_for_trade(rec):
             all_rows.append(_empty_fee_row(code, "申购费率", purchase_status, redemption_status))

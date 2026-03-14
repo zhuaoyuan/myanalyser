@@ -44,6 +44,7 @@ myanalyser/
 - `src/fund_metrics_core.py`：基金指标计算核心逻辑（Backtest 与 Scoreboard 共用，A 股口径：243 交易日/年、20 交易日/月）
 - `src/backtest_portfolio.py`：按规则回测组合
 - `src/fund_gmbd.py`：基金规模变动数据抓取（东方财富 FundArchivesDatas API，akshare 风格 `fund_gmbd_em(code)`）；CLI `tools/fetch_fund_gmbd.py`
+- `src/fund_cyrjg.py`：基金持有人结构数据抓取（东方财富 FundArchivesDatas API，akshare 风格 `fund_cyrjg_em(code)`）；CLI `tools/fetch_fund_cyrjg.py`
 - `src/verify_scoreboard_recalc.py`：榜单指标独立重算核验（从 fund_etl 中间数据重算并与导出榜单比对，支持 `--latest-nav-date`）
 - `src/contracts/pipeline_contracts.py`：关键中间产物契约（列名/类型/非空/唯一键、目录 CSV 文件数量）
 - `src/validators/validate_pipeline_artifacts.py`：按 stage 执行契约校验（失败返回非 0）

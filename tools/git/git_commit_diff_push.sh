@@ -19,5 +19,5 @@ echo "🚀 正在提交，版本号为: $COMMIT_MSG"
 # 5. 执行你的命令组合
 git add . && \
 git commit -m "$COMMIT_MSG" && \
-./tools/gitdiff.sh && \
+./tools/git/gitdiff.sh && \
 git push origin main

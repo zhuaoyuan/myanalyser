@@ -3,6 +3,16 @@
 """
 v2 预备数据工作流（宽存）：只抓取全量原始数据，不做筛选。
 
+命令样例：
+python myanalyser/tools/v2/prep_data_workflow.py \
+  --work-dir myanalyser/tmp/prep_work_v2 \
+  --purchase-csv myanalyser/tmp/1_refilter/prep_work/fund_purchase.csv \
+  --cyrjg-csv finance-runs/run_20260310_191534/data/versions/20260310_191534/fund_etl/cyrjg_out.csv \
+  --gmbd-csv myanalyser/tmp/1_refilter/prep_work/fund_gmbd.csv \
+  --fee-csv myanalyser/tmp/1_refilter/prep_work/fund_fee_structured.csv \
+  --overview-csv myanalyser/tmp/1_refilter/prep_work/fund_overview.csv \
+  --delay 0
+
 产出到 work_dir（固定文件名）：
 - fund_purchase.csv
 - fund_cyrjg.csv

@@ -15,6 +15,10 @@ v2 预备数据 eligible 计算（仅使用本地缓存，不联网）。
 - fund_fee_structured.csv（或已存在 fund_fee_filtered.csv）
 - fund_overview.csv
 
+命令样例：
+python myanalyser/src/v2/transforms/prep_eligible_from_cached.py \
+  --work-dir myanalyser/tmp/prep_work_v2
+
 输出：
 - prep_result.csv（默认写入 work_dir）
 """

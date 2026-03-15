@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pandas as pd
 
-TOOLS_DIR = Path(__file__).resolve().parent.parent
-if str(TOOLS_DIR) not in sys.path:
-    sys.path.insert(0, str(TOOLS_DIR))
+PREP_DIR = Path(__file__).resolve().parent.parent / "prep"
+if str(PREP_DIR) not in sys.path:
+    sys.path.insert(0, str(PREP_DIR))
 
 from fetch_fund_fee import _parse_amount_tier, _parse_period_tier
 

@@ -258,7 +258,7 @@ class TestFetchFundCyrjgCLI:
 
             spec = importlib.util.spec_from_file_location(
                 "fetch_fund_cyrjg",
-                Path(__file__).resolve().parent.parent / "tools" / "fetch_fund_cyrjg.py",
+                Path(__file__).resolve().parent.parent / "tools" / "prep" / "fetch_fund_cyrjg.py",
             )
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
@@ -280,7 +280,7 @@ class TestFetchFundCyrjgCLI:
 
             spec = importlib.util.spec_from_file_location(
                 "fetch_fund_cyrjg",
-                Path(__file__).resolve().parent.parent / "tools" / "fetch_fund_cyrjg.py",
+                Path(__file__).resolve().parent.parent / "tools" / "prep" / "fetch_fund_cyrjg.py",
             )
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)

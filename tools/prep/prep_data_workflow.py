@@ -13,7 +13,7 @@
 7. 筛选：x + c.1(存在) + a(未出现机构持有>60%) + b(曾规模>2亿) + e(date前成立) -> d.1
 
 样例：
-python myanalyser/tools/prep_data_workflow.py \
+python myanalyser/tools/prep/prep_data_workflow.py \
   --date 2021-01-01 \
   -o myanalyser/tmp/1/prep_result_m.csv \
   --purchase-csv finance-runs/run_20260310_191534/data/versions/20260310_191534/fund_etl/fund_purchase.csv \
@@ -34,9 +34,9 @@ from pathlib import Path
 
 import pandas as pd
 
-# 项目路径：tools 父级为 myanalyser
-_TOOLS_DIR = Path(__file__).resolve().parent
-_MYANALYSER = _TOOLS_DIR.parent
+# 项目路径：tools/prep 的 parent.parent 为 myanalyser
+_PREP_DIR = Path(__file__).resolve().parent
+_MYANALYSER = _PREP_DIR.parent.parent
 if str(_MYANALYSER / "src") not in sys.path:
     sys.path.insert(0, str(_MYANALYSER / "src"))
 
@@ -79,7 +79,7 @@ def _run_cli(script: str, args: list[str], logger: logging.Logger, stream_output
     cwd 设为 myanalyser 父目录（工作区根），子脚本路径使用绝对路径，保证任意工作目录下调用均可靠。
     stream_output=True 时子进程 stdout/stderr 直接输出到终端，便于查看实时进度。
     """
-    script_path = (_MYANALYSER / "tools" / script).resolve()
+    script_path = (_MYANALYSER / "tools" / "prep" / script).resolve()
     cmd = [sys.executable, str(script_path)] + [str(a) for a in args]
     logger.info("执行: %s", " ".join(cmd))
     ret = subprocess.run(cmd, capture_output=not stream_output, text=True, cwd=_MYANALYSER.parent)

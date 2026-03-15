@@ -319,8 +319,10 @@ def _apply_filters(
             e_df["_inc"] = e_df[col].map(_parse_date)
             inc_ok = e_df[e_df["_inc"].notna() & (e_df["_code"] != "")]
             inc_ok = inc_ok.sort_values("_inc", na_position="last")
-            inc_by_code = inc_ok.drop_duplicates("_code", keep="first").set_index("_code")["_inc"].to_dict()
-            include_e = set(inc_ok.loc[inc_ok["_inc"] < date_ts, "_code"])
+            # 与 inc_by_code 一致：每基金取最早成立日，再筛 date 前成立
+            inc_dedup = inc_ok.drop_duplicates("_code", keep="first").set_index("_code")
+            inc_by_code = inc_dedup["_inc"].to_dict()
+            include_e = set(inc_dedup.index[inc_dedup["_inc"] < date_ts])
         else:
             include_e = None  # 无成立日期列时跳过 e 条件
 
@@ -378,8 +380,10 @@ def _apply_filters(
     if include_e is not None:
         codes &= include_e
         logger.info("[筛选] e(date前成立) 后 %d", len(codes))
+    elif not overview_csv.exists():
+        logger.warning("e 文件不存在，跳过该条件")
     else:
-        logger.warning("e 文件不存在或无成立日期列，跳过该条件")
+        logger.warning("e 无成立日期列，跳过该条件")
 
     result = purchase_df[purchase_df["基金代码"].map(_safe_code).isin(codes)].copy()
     logger.info("[d.1] 完成筛选，剩余 %d 只", len(result))

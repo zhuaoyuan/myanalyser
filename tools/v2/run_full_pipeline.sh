@@ -8,7 +8,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 cd "${PROJECT_ROOT}"
 
@@ -29,7 +29,7 @@ fi
 
 if [[ -z "${VIRTUAL_ENV:-}" ]]; then
   echo "[v2-full-run] warning: VIRTUAL_ENV is not active. Please run:"
-  echo "  source /Users/zhuaoyuan/cursor-workspace/finance/myanalyser/.venv312/bin/activate"
+  echo "  source ${PROJECT_ROOT}/.venv312/bin/activate"
 fi
 
 if command -v python >/dev/null 2>&1; then

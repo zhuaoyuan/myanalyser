@@ -38,7 +38,10 @@ MISSING_STAGE = "compare_adjusted_nav_cum_return_window"
 
 
 def _safe_code(value: object) -> str:
-    return str(value).strip().zfill(6)
+    s = str(value).strip()
+    if not s or not s.isdigit() or len(s) > 6:
+        return ""
+    return s.zfill(6)
 
 
 def _append_error_log(log_path: Path, code: str, error: str) -> None:
@@ -173,7 +176,7 @@ def compare_adjusted_nav_and_cum_return_window(
         try:
             adjusted_series = _parse_series(adjusted_csv, date_col="净值日期", value_col="复权净值")
             cum_series = _parse_series(cum_csv, date_col="日期", value_col="累计收益率")
-        except Exception as err:  # noqa: BLE001
+        except (ValueError, KeyError, pd.errors.ParserError) as err:
             _append_error_log(error_jsonl, code, f"parse_error: {err}")
             summary_rows.append(_empty_summary_row(code, "是"))
             continue
@@ -223,7 +226,7 @@ def compare_adjusted_nav_and_cum_return_window(
 
             local_return = _calc_local_return(local_start, local_end)
             remote_return = _calc_remote_return(remote_start, remote_end)
-            if local_return in (None, 0.0) or remote_return is None:
+            if local_return is None or remote_return is None or abs(local_return) < 1e-8:
                 deviation = None
             else:
                 deviation = (local_return - remote_return) / local_return

@@ -10,9 +10,11 @@ from pathlib import Path
 
 import pandas as pd
 
+from project_paths import project_root
+
 _TRANSFORMS_DIR = Path(__file__).resolve().parent
-_MYANALYSER = _TRANSFORMS_DIR.parent.parent.parent
-assert _MYANALYSER.name == "myanalyser", f"unexpected _MYANALYSER: {_MYANALYSER}"
+
+_MYANALYSER = project_root()
 
 _PREP_TOOLS = _MYANALYSER / "tools" / "prep"
 if str(_MYANALYSER / "src") not in sys.path:
@@ -68,6 +70,7 @@ def _has_consecutive_over_60(grp: pd.DataFrame, date_col: str) -> bool:
     df = grp.dropna(subset=["_pct", date_col]).sort_values(date_col)
     if len(df) < 2:
         return False
+    df = df.groupby(date_col, as_index=False)["_pct"].max().sort_values(date_col)
     vals = df["_pct"].values
     for i in range(len(vals) - 1):
         if vals[i] > 60 and vals[i + 1] > 60:

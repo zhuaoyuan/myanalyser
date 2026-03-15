@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from bisect import bisect_left, bisect_right
 from pathlib import Path
@@ -255,7 +256,7 @@ def _run_scoreboard(
         mysql_host="127.0.0.1",
         mysql_port=3306,
         mysql_user="root",
-        mysql_password="your_strong_password",
+        mysql_password=os.environ.get("MYSQL_PASSWORD", ""),
         mysql_db="fund_analysis",
         clickhouse_host="127.0.0.1",
         clickhouse_port=8123,
@@ -400,6 +401,10 @@ def main() -> None:
                 filter_csv=filter_csv,
                 output_csv=purchase_filtered_csv,
             )
+            if not purchase_filtered_csv.exists():
+                raise FileNotFoundError(
+                    f"build_filtered_purchase_csv 未生成 {purchase_filtered_csv}"
+                )
 
         scoreboard_csv = scoreboard_dir / f"fund_scoreboard_{run_id}_{ruleset_version}_{as_of_str}.csv"
         if scoreboard_csv.exists():

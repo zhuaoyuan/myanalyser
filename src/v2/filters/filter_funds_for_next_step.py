@@ -74,8 +74,8 @@ def _compare_detail_issue_reasons(
 
     scoped["本地远程收益率偏差"] = pd.to_numeric(scoped["本地远程收益率偏差"], errors="coerce")
     bad = scoped["本地远程收益率偏差"].abs() >= max_abs_deviation
-    if bad.fillna(False).any():
-        return [f"规则4: 指定区间内存在偏差>={max_abs_deviation:.2%}"]
+    if bad.fillna(True).any():
+        return [f"规则4: 指定区间内存在偏差>={max_abs_deviation:.2%}或缺失"]
     return []
 
 

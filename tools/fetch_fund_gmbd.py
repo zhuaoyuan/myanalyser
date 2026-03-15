@@ -110,6 +110,15 @@ def main() -> int:
 
     if not dfs:
         print("未获取到任何数据", file=sys.stderr)
+        # 全部返回空数据（非异常）：输出空 CSV，增量模式下下游可复用已有文件
+        if args.output and not failed:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            empty_df = pd.DataFrame(
+                columns=["基金代码", "日期", "期间申购（亿份）", "期间赎回（亿份）", "期末总份额（亿份）", "期末净资产（亿元）", "净资产变动率"]
+            )
+            empty_df.to_csv(args.output, index=False, encoding="utf-8-sig")
+            print(f"已输出空 CSV -> {args.output}（{total} 只均无规模数据，可复用已有文件）", file=sys.stderr)
+            return 0
         return 1
 
     combined = pd.concat([d[1] for d in dfs], ignore_index=True)

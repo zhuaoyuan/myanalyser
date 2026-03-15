@@ -11,6 +11,17 @@
 5. 根据 c 进行基金分类 (c.1)
 6. 根据 x 获取全体基金详情 (e)
 7. 筛选：x + c.1(存在) + a(未出现机构持有>60%) + b(曾规模>2亿) + e(date前成立) -> d.1
+
+样例：
+python myanalyser/tools/prep_data_workflow.py \
+  --date 2021-01-01 \
+  -o myanalyser/tmp/1/prep_result_m.csv \
+  --purchase-csv finance-runs/run_20260310_191534/data/versions/20260310_191534/fund_etl/fund_purchase.csv \
+  --cyrjg-csv finance-runs/run_20260310_191534/data/versions/20260310_191534/fund_etl/cyrjg_out.csv \
+  --gmbd-csv /Users/zhuaoyuan/cursor-workspace/finance/myanalyser/tmp/prep_work/fund_gmbd.csv \
+  --fee-csv finance-runs/run_20260310_191534/data/versions/20260310_191534/fund_etl/fee/fund_fee_complete_fixed.csv \
+  --overview-csv finance-runs/run_20260301_1_formal_retry_step4_rerun/data/versions/20260301_1_formal_retry_step4_rerun/fund_etl/fund_overview.csv
+
 """
 from __future__ import annotations
 
@@ -204,7 +215,7 @@ def _step_c_fee(
 
     purchase_for_fee = purchase_csv
     if to_fetch:
-        logger.info("[c] 开始抓取基金费率，待抓取 %d 只（已有 %d 只）", len(to_fetch), len(codes) - len(to_fetch) if existing else 0)
+        logger.info("[c] 开始抓取基金费率，待抓取 %d 只（已有 %d 只）", len(to_fetch), len(codes) - len(to_fetch) if existing is not None else 0)
         tmp_purchase = work_dir / "_tmp_fee_purchase.csv"
         sub = codes_df[codes_df["基金代码"].map(_safe_code).isin(to_fetch)]
         sub.to_csv(tmp_purchase, index=False, encoding="utf-8-sig")

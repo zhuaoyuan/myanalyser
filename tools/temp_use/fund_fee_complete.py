@@ -25,6 +25,8 @@ import pandas as pd
 PREP_DIR = Path(__file__).resolve().parent.parent / "prep"
 if str(PREP_DIR) not in sys.path:
     sys.path.insert(0, str(PREP_DIR))
+if not (PREP_DIR / "fetch_fund_fee.py").exists():
+    raise RuntimeError(f"expected fetch_fund_fee in {PREP_DIR}")
 
 from fetch_fund_fee import (
     DEFAULT_REQUEST_DELAY,

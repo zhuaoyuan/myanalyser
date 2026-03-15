@@ -37,6 +37,7 @@ import pandas as pd
 # 项目路径：tools/prep 的 parent.parent 为 myanalyser
 _PREP_DIR = Path(__file__).resolve().parent
 _MYANALYSER = _PREP_DIR.parent.parent
+assert _MYANALYSER.name == "myanalyser", f"unexpected _MYANALYSER: {_MYANALYSER}"
 if str(_MYANALYSER / "src") not in sys.path:
     sys.path.insert(0, str(_MYANALYSER / "src"))
 
@@ -79,7 +80,7 @@ def _run_cli(script: str, args: list[str], logger: logging.Logger, stream_output
     cwd 设为 myanalyser 父目录（工作区根），子脚本路径使用绝对路径，保证任意工作目录下调用均可靠。
     stream_output=True 时子进程 stdout/stderr 直接输出到终端，便于查看实时进度。
     """
-    script_path = (_MYANALYSER / "tools" / "prep" / script).resolve()
+    script_path = (_PREP_DIR / script).resolve()
     cmd = [sys.executable, str(script_path)] + [str(a) for a in args]
     logger.info("执行: %s", " ".join(cmd))
     ret = subprocess.run(cmd, capture_output=not stream_output, text=True, cwd=_MYANALYSER.parent)

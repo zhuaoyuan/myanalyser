@@ -118,16 +118,16 @@ def _step_b_gmbd(
         tmp_purchase = work_dir / "_tmp_gmbd_purchase.csv"
         tmp_df = pd.DataFrame({"基金代码": to_fetch})
         tmp_df.to_csv(tmp_purchase, index=False, encoding="utf-8-sig")
-    ok = _run_cli(
-        "fetch_fund_gmbd.py",
-        ["-i", str(tmp_purchase), "-o", str(tmp_out), "--delay", str(delay)],
-        logger,
-    )
-    if not ok:
-        raise RuntimeError("基金规模抓取失败")
-    if not tmp_out.exists():
-        raise FileNotFoundError(f"fund_gmbd 输出缺失: {tmp_out}")
-        fetched = pd.read_csv(tmp_out, dtype=str, encoding="utf-8-sig") if tmp_out.exists() else pd.DataFrame()
+        ok = _run_cli(
+            "fetch_fund_gmbd.py",
+            ["-i", str(tmp_purchase), "-o", str(tmp_out), "--delay", str(delay)],
+            logger,
+        )
+        if not ok:
+            raise RuntimeError("基金规模抓取失败")
+        if not tmp_out.exists():
+            raise FileNotFoundError(f"fund_gmbd 输出缺失: {tmp_out}")
+        fetched = pd.read_csv(tmp_out, dtype=str, encoding="utf-8-sig")
         if existing is not None and not fetched.empty:
             merged = pd.concat([existing, fetched], ignore_index=True)
             if "基金代码" in merged.columns and "日期" in merged.columns:

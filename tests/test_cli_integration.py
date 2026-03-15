@@ -13,7 +13,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-import backtest_portfolio
+import backtest_verify_e2e
 import check_trade_day_data_integrity
 import compare_adjusted_nav_and_cum_return
 import fund_etl
@@ -342,54 +342,36 @@ class CoreCliIntegrationTest(unittest.TestCase):
         run_id = _test_run_id("backtest")
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
-            trade_dates_csv = root / "data" / "common" / "trade_dates.csv"
+            nav_dir = root / "fund_adjusted_nav_by_code"
+            nav_dir.mkdir(parents=True, exist_ok=True)
             out_dir = root / "artifacts" / f"backtest_{run_id}"
-            trade_dates_csv.parent.mkdir(parents=True, exist_ok=True)
-            pd.DataFrame({"trade_date": pd.date_range("2024-01-01", "2024-03-31", freq="D").strftime("%Y-%m-%d")}).to_csv(
-                trade_dates_csv,
-                index=False,
-                encoding="utf-8-sig",
-            )
 
             nav_dates = pd.date_range("2024-01-02", "2024-03-31", freq="D")
-            nav_rows: list[dict[str, object]] = []
-            for i, dt in enumerate(nav_dates):
-                nav_rows.append({"fund_code": "000001", "nav_date": dt.strftime("%Y-%m-%d"), "adjusted_nav": 1.0 + 0.01 * i})
-                nav_rows.append({"fund_code": "000002", "nav_date": dt.strftime("%Y-%m-%d"), "adjusted_nav": 1.0})
-            nav_df = pd.DataFrame(nav_rows)
+            for code in ("000001", "000002"):
+                rows = []
+                for i, dt in enumerate(nav_dates):
+                    adj = 1.0 + 0.01 * i if code == "000001" else 1.0
+                    rows.append({"基金代码": code, "净值日期": dt.strftime("%Y-%m-%d"), "复权净值": adj})
+                pd.DataFrame(rows).to_csv(nav_dir / f"{code}.csv", index=False, encoding="utf-8-sig")
 
             def fake_query(query: str, container_name: str) -> pd.DataFrame:
-                if "FROM fund_analysis.fact_fund_scoreboard_snapshot GROUP BY data_version" in query:
-                    return pd.DataFrame([{"data_version": "202401", "as_of_date": "2024-01-01"}])
-                if "FROM fund_analysis.fact_fund_scoreboard_snapshot" in query and "SELECT fund_code" in query:
+                if "fact_fund_scoreboard_snapshot" in query and "SELECT fund_code" in query:
                     return pd.DataFrame([{"fund_code": "000001"}, {"fund_code": "000002"}])
-                if "FROM fund_analysis.fact_fund_nav_daily GROUP BY data_version" in query:
-                    return pd.DataFrame([{"data_version": "nav_v1", "as_of_date": "2024-03-31"}])
-                if "FROM fund_analysis.fact_fund_nav_daily" in query and "SELECT fund_code, nav_date, adjusted_nav" in query:
-                    return nav_df.copy()
                 raise AssertionError(f"unexpected query: {query}")
 
-            args = Namespace(
-                start_date="2024-01-01",
-                end_date="2024-01-31",
-                output_dir=out_dir,
-                trade_dates_csv=str(trade_dates_csv),
-                rebalance_interval_days=15,
-                holding_period_days=30,
-                selection_rule_id=f"test_rule_{run_id}",
-                selection_data_version=None,
-                selection_where="1",
-                selection_order_by="annual_return DESC, fund_code ASC",
-                selection_limit=2,
-                exclude_subscribe_status="暂停申购,封闭期",
-                exclude_redeem_status="暂停赎回,封闭期",
-                nav_data_version=None,
-                clickhouse_db="fund_analysis",
-                clickhouse_container="fund_clickhouse",
-            )
-            with patch("backtest_portfolio._run_clickhouse_query", side_effect=fake_query):
-                backtest_portfolio.run_backtest(args)
-            self.assertTrue((out_dir / "backtest_run_summary.csv").exists())
+            argv = [
+                "backtest_verify_e2e",
+                "--start-date", "2024-01-01",
+                "--end-date", "2024-01-31",
+                "--nav-dir", str(nav_dir),
+                "--output-dir", str(out_dir),
+                "--selection-data-version", f"test_{run_id}",
+            ]
+            with patch("backtest_verify_e2e._run_clickhouse_query", side_effect=fake_query), patch.object(
+                sys, "argv", argv
+            ):
+                backtest_verify_e2e.main()
+            self.assertTrue((out_dir / "period_detail.csv").exists())
 
 
 if __name__ == "__main__":

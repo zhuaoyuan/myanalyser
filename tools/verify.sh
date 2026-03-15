@@ -118,7 +118,7 @@
 #   - 连接 MySQL/ClickHouse
 #   - `--apply-ddl` 自动建表
 #   - 将当前 `DATA_VERSION` 数据入库
-# - 再运行 `backtest_portfolio.py`：
+# - 再运行 `backtest_verify_e2e.py`：
 #   - 2025 年区间
 #   - 固定规则 `verify_e2e_top5`
 #   - 从 ClickHouse 取选基和净值
@@ -617,23 +617,23 @@ echo "[verify] step10 scoreboard_seconds=$((STEP10_SCOREBOARD_END_TS - STEP10_SC
 assert_csv_has_rows "${SCOREBOARD_DIR}/fund_scoreboard_${DATA_VERSION}.csv"
 
 STEP10_BACKTEST_START_TS="$(date +%s)"
-"${PYTHON_BIN}" src/backtest_portfolio.py \
+"${PYTHON_BIN}" tools/backtest_verify_e2e.py \
   --start-date 2025-01-01 \
   --end-date 2025-12-31 \
   --output-dir "${BACKTEST_DIR}" \
+  --nav-dir "${FUND_ETL_DIR}/fund_adjusted_nav_by_code" \
   --trade-dates-csv "${PROJECT_ROOT}/data/common/trade_dates.csv" \
   --selection-rule-id "verify_e2e_top5" \
   --selection-data-version "${DATA_VERSION}" \
   --selection-where "1" \
   --selection-order-by "annual_return DESC, fund_code ASC" \
   --selection-limit 5 \
-  --nav-data-version "${DATA_VERSION}" \
   --clickhouse-db fund_analysis \
   --clickhouse-container fund_clickhouse
 STEP10_BACKTEST_END_TS="$(date +%s)"
 echo "[verify] step10 backtest_seconds=$((STEP10_BACKTEST_END_TS - STEP10_BACKTEST_START_TS))"
 
-assert_csv_has_rows "${BACKTEST_DIR}/backtest_window_detail.csv"
+assert_csv_has_rows "${BACKTEST_DIR}/period_detail.csv"
 assert_file_exists "${BACKTEST_DIR}/backtest_report.md"
 finish_step "success"
 

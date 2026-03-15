@@ -43,7 +43,7 @@ myanalyser/
 - `src/pipeline_scoreboard.py`：评分榜单计算、导出与入库（支持 `--formal-only`、`--skip-sinks`、`--latest-nav-date`、`--clickhouse-write-profile`、`--clickhouse-write-scope`）
 - `src/scoreboard_metrics.py`：评分榜指标计算共享模块（供 pipeline 与 verify 共用；与 backtest 共用 `fund_metrics_core` 保证口径一致）
 - `src/fund_metrics_core.py`：基金指标计算核心逻辑（Backtest 与 Scoreboard 共用，A 股口径：243 交易日/年、20 交易日/月）
-- `src/backtest_portfolio.py`：按规则回测组合
+- `src/backtest_verify_e2e.py`：verify step10 回测适配层（ClickHouse 选基 + 本地净值 + PyBroker 引擎）
 - `src/fund_gmbd.py`：基金规模变动数据抓取（东方财富 FundArchivesDatas API，akshare 风格 `fund_gmbd_em(code)`）；CLI `tools/prep/fetch_fund_gmbd.py`
 - `src/fund_cyrjg.py`：基金持有人结构数据抓取（东方财富 FundArchivesDatas API，akshare 风格 `fund_cyrjg_em(code)`）；CLI `tools/prep/fetch_fund_cyrjg.py`
 - `tools/prep/prep_data_workflow.py`：**预备数据工作流**，从指定日期起拉取并筛选基金预备数据（购买 x → 持有人比例 a、规模 b、费率 c → 基金分类 c.1 → 详情 e → 多条件筛选 d.1）；支持已有 CSV 增量复用
@@ -271,7 +271,7 @@ pip install -r myanalyser/requirements.txt
 用于代码和流程回归验收，重点是“快而全地证明链路可用”。
 
 - 单测回归（`tests/test_*.py`）
-- 核心 CLI smoke（`fund_etl`、`pipeline_scoreboard`、`backtest_portfolio`、`compare_adjusted_nav_and_cum_return`、`check_trade_day_data_integrity`）
+- 核心 CLI smoke（`fund_etl`、`pipeline_scoreboard`、`backtest_verify_e2e`、`compare_adjusted_nav_and_cum_return`、`check_trade_day_data_integrity`）
 - Step 10b 筛选与打分（消费 scoreboard，产出 `filter_result.csv`、`scored_result.csv`）
 - 启动 `fund_db_infra`（MySQL + ClickHouse）
 - ETL 抽样数据链路（step1~step7，抽样 21 只：前 20 + `163402`）

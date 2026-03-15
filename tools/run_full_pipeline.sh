@@ -52,6 +52,8 @@
 # - 仅支持 0 或 1 个位置参数；若传入，必须是 @<csv_path> 格式。
 # - 建议先激活 venv，或确保 python/python3 在 PATH 中可用；复现环境请使用 pip install -r requirements-lock.txt。
 # - 默认输出目录在 myanalyser/artifacts 和 myanalyser/data/versions 下。
+# - 黑名单剔除已前置到 prep：推荐先运行 prep_data_workflow 产出 fund_purchase。若直接使用
+#   akshare step1 或本地 @path 传入的 CSV，则黑名单未剔除，下游以 fund_purchase 为准。
 
 set -euo pipefail
 
@@ -205,7 +207,8 @@ FILTER_START_DATE="${FILTER_START_DATE:-2023-01-01}"
 FILTER_MAX_ABS_DEVIATION="${FILTER_MAX_ABS_DEVIATION:-0.02}"
 FILTER_RESULT_CSV="${ARTIFACTS_DIR}/filtered_fund_candidates.csv"
 FILTERED_PURCHASE_CSV="${FUND_ETL_DIR}/fund_purchase_for_step10_filtered.csv"
-# 黑名单剔除已前置到 prep 阶段，fund_purchase 即为有效清单
+# 黑名单剔除已前置到 prep 阶段，fund_purchase 即为有效清单（与 run_full_pipeline 一致）
+# 推荐先运行 prep_data_workflow 产出 fund_purchase；若使用 akshare/LOCAL 直接产出，则黑名单未剔除
 FUND_PURCHASE_EFFECTIVE_CSV="${FUND_ETL_DIR}/fund_purchase.csv"
 INTEGRITY_DETAILS_DIR="${ARTIFACTS_DIR}/trade_day_integrity_reports/details_${INTEGRITY_START_DATE}_${INTEGRITY_END_DATE}"
 INTEGRITY_SUMMARY_CSV="${ARTIFACTS_DIR}/trade_day_integrity_reports/trade_day_integrity_summary_${INTEGRITY_START_DATE}_${INTEGRITY_END_DATE}.csv"
@@ -441,7 +444,6 @@ summary = pd.DataFrame(
         {"指标": "成功步骤数", "值": ok_steps},
         {"指标": "步骤成功率(%)", "值": round(success_rate, 2)},
         {"指标": "有效基金数", "值": purchase_effective},
-        {"指标": "过滤前基金数", "值": purchase_effective},
         {"指标": "过滤后基金数", "值": purchase_after},
         {"指标": "被过滤基金数", "值": filtered_yes},
     ]
@@ -541,7 +543,6 @@ start_step "step2_fund_etl"
 if has_checkpoint "step2_fund_etl"; then
   echo "[full-run] step 2/7: checkpoint hit, skip fund_etl"
   assert_csv_has_rows "${FUND_ETL_DIR}/fund_purchase.csv"
-  assert_csv_has_rows "${FUND_PURCHASE_EFFECTIVE_CSV}"
   assert_csv_has_rows "${FUND_ETL_DIR}/fund_overview.csv"
   assert_dir_has_csv "${FUND_ETL_DIR}/fund_nav_by_code"
   assert_dir_has_csv "${FUND_ETL_DIR}/fund_bonus_by_code"
@@ -550,7 +551,7 @@ if has_checkpoint "step2_fund_etl"; then
   assert_dir_has_csv "${FUND_ETL_DIR}/fund_cum_return_by_code"
 else
   if [[ -n "${LOCAL_PURCHASE_CSV}" ]]; then
-    echo "[full-run] step 2/7: fund_etl verify + step2~step7 (using fund_purchase_effective)"
+    echo "[full-run] step 2/7: fund_etl verify + step2~step7 (using fund_purchase)"
     "${PYTHON_BIN}" src/fund_etl.py \
       --run-id "${RUN_ID}" \
       --mode verify \
@@ -582,7 +583,7 @@ else
       fi
     done
   else
-    echo "[full-run] step 2/7: fund_etl verify + step2~step7 (using fund_purchase_effective)"
+    echo "[full-run] step 2/7: fund_etl verify + step2~step7 (using fund_purchase)"
     "${PYTHON_BIN}" src/fund_etl.py \
       --run-id "${RUN_ID}" \
       --mode verify \

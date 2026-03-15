@@ -31,7 +31,7 @@ myanalyser/
 - 分红/拆分校对结果：`data/versions/{run_id}/fund_etl/revised_fund_bonus_by_code`、`data/versions/{run_id}/fund_etl/revised_fund_split_by_code`
 - 校对留档目录：`data/common/revise/{YYYYMMDD}_{run_id}_revised/fund_etl`
 - 公共交易日历：`data/common/trade_dates.csv`
-- 基金黑名单：`data/common/fund_blacklist.csv`（可选，格式含 `基金代码` 列；通过 `FUND_BLACKLIST_PATH` 覆盖路径）
+- 基金黑名单：`data/common/fund_blacklist.csv`（可选，格式含 `基金代码` 列；在 **prep_data_workflow** 阶段剔除，主流水线不再使用）
 
 ## 核心脚本
 
@@ -50,7 +50,7 @@ myanalyser/
 - `src/verify_scoreboard_recalc.py`：榜单指标独立重算核验（从 fund_etl 中间数据重算并与导出榜单比对，支持 `--latest-nav-date`）
 - `src/contracts/pipeline_contracts.py`：关键中间产物契约（列名/类型/非空/唯一键、目录 CSV 文件数量）
 - `src/validators/validate_pipeline_artifacts.py`：按 stage 执行契约校验（失败返回非 0）
-- `src/transforms/build_effective_purchase_csv.py`：从 `fund_purchase` 剔除黑名单生成 `fund_purchase_effective.csv`（不修改原始 purchase）
+- `src/transforms/build_effective_purchase_csv.py`：从 `fund_purchase` 剔除黑名单生成 `fund_purchase_effective.csv`（供 prep 或独立调用；主流水线已不依赖，黑名单在 prep 阶段处理）
 - `src/transforms/build_filtered_purchase_csv.py`：根据过滤结果生成 `fund_purchase_for_step10_filtered.csv`
 - `src/compute_fund_composite_score.py`：基金综合得分计算（对 filtered/scoreboard CSV 做归一化+分组加权，输出带得分的 CSV）
 - `src/filter_score/`：筛选与打分模块（入口 `filter_and_score_main.py`，可扩展过滤与算分策略，内置样例：最稳健原则过滤、低风险偏债得分）

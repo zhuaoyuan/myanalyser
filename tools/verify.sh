@@ -193,8 +193,8 @@ FILTER_MAX_ABS_DEVIATION="${FILTER_MAX_ABS_DEVIATION:-0.02}"
 VERIFY_SCOREBOARD_CH_WRITE_PROFILE="${VERIFY_SCOREBOARD_CH_WRITE_PROFILE:-fast}"
 FILTER_RESULT_CSV="${ARTIFACTS_DIR}/filtered_fund_candidates.csv"
 FILTERED_PURCHASE_CSV="${FUND_ETL_DIR}/fund_purchase_for_step10_filtered.csv"
-FUND_PURCHASE_EFFECTIVE_CSV="${FUND_ETL_DIR}/fund_purchase_effective.csv"
-FUND_BLACKLIST_PATH="${FUND_BLACKLIST_PATH:-${PROJECT_ROOT}/data/common/fund_blacklist.csv}"
+# 黑名单剔除已前置到 prep 阶段，fund_purchase 即为有效清单
+FUND_PURCHASE_EFFECTIVE_CSV="${FUND_ETL_DIR}/fund_purchase.csv"
 RUN_REPORT_STEPS_CSV="${ARTIFACTS_DIR}/run_report_steps.csv"
 RUN_REPORT_SUMMARY_CSV="${ARTIFACTS_DIR}/run_report_summary.csv"
 RUN_REPORT_MD="${ARTIFACTS_DIR}/run_report.md"
@@ -478,14 +478,6 @@ if sample_df.shape[0] != 21:
 sample_df.to_csv(purchase_csv, index=False, encoding="utf-8-sig")
 PY
 assert_csv_has_rows "${FUND_ETL_DIR}/fund_purchase.csv"
-finish_step "success"
-
-start_step "step5b_build_effective_purchase"
-"${PYTHON_BIN}" src/transforms/build_effective_purchase_csv.py \
-  --purchase-csv "${FUND_ETL_DIR}/fund_purchase.csv" \
-  --blacklist-csv "${FUND_BLACKLIST_PATH}" \
-  --output-csv "${FUND_PURCHASE_EFFECTIVE_CSV}"
-assert_csv_has_rows "${FUND_PURCHASE_EFFECTIVE_CSV}"
 finish_step "success"
 
 start_step "step6_fund_etl_step2_to_step7"

@@ -4,8 +4,10 @@
 预备数据工作流结果验证脚本。
 
 对照原始 purchase 清单与结果文件，抽样验证：
-1. 在结果中的 100 条：确认满足筛选条件（c.1 存在、a 无机构>60%、b 曾规模>2亿、e date前成立）
+1. 在结果中的 100 条：确认满足筛选条件（c.1 存在、a 无机构连续两次>60%、b 曾规模>2亿、e date前成立）
 2. 不在结果中的 100 条：确认满足至少一条过滤条件（被 c.1/a/b/e 任一排除）
+
+a 条件与 prep_data_workflow 一致：date 后、成立>2年后、机构持仓连续两次超过60% 才排除。
 """
 from __future__ import annotations
 
@@ -41,6 +43,30 @@ def _parse_date(text: object) -> pd.Timestamp | None:
     return pd.to_datetime(s, errors="coerce")
 
 
+def _has_consecutive_over_60(grp: pd.DataFrame, date_col: str) -> bool:
+    """该基金是否存在连续两次机构持仓>60%。"""
+    df = grp.dropna(subset=["_pct", date_col]).sort_values(date_col)
+    if len(df) < 2:
+        return False
+    vals = df["_pct"].values
+    for i in range(len(vals) - 1):
+        if vals[i] > 60 and vals[i + 1] > 60:
+            return True
+    return False
+
+
+def _has_consecutive_over_60(grp: pd.DataFrame, date_col: str) -> bool:
+    """该基金是否存在连续两次机构持仓>60%。"""
+    df = grp.dropna(subset=["_pct", date_col]).sort_values(date_col)
+    if len(df) < 2:
+        return False
+    vals = df["_pct"].values
+    for i in range(len(vals) - 1):
+        if vals[i] > 60 and vals[i + 1] > 60:
+            return True
+    return False
+
+
 def _parse_pct(val: object) -> float | None:
     if val is None or (isinstance(val, float) and pd.isna(val)):
         return None
@@ -49,6 +75,18 @@ def _parse_pct(val: object) -> float | None:
         return None
     m = re.match(r"([\d.]+)\s*%", s)
     return float(m[1]) if m else None
+
+
+def _has_consecutive_over_60(grp: pd.DataFrame, date_col: str) -> bool:
+    """该基金是否存在连续两次机构持仓>60%。"""
+    df = grp.dropna(subset=["_pct", date_col]).sort_values(date_col)
+    if len(df) < 2:
+        return False
+    vals = df["_pct"].values
+    for i in range(len(vals) - 1):
+        if vals[i] > 60 and vals[i + 1] > 60:
+            return True
+    return False
 
 
 def _check_code_conditions(
@@ -119,8 +157,20 @@ def run(
     else:
         print("[c.1] fund_fee_filtered.csv 不存在，跳过")
 
-    # a
+    # a：与 prep_data_workflow 一致：date 后、成立>2年后、机构持仓连续两次>60% 才排除
     exclude_a: set[str] = set()
+    inc_by_code: dict[str, pd.Timestamp] = {}
+    if overview.exists():
+        e_df = pd.read_csv(overview, dtype=str)
+        col = "成立日期/规模" if "成立日期/规模" in e_df.columns else "成立日期"
+        if col in e_df.columns:
+            e_df = e_df.copy()
+            e_df["_code"] = e_df["基金代码"].map(_safe_code)
+            e_df["_inc"] = e_df[col].map(_parse_date)
+            inc_ok = e_df[e_df["_inc"].notna() & (e_df["_code"] != "")]
+            inc_ok = inc_ok.sort_values("_inc", na_position="last")
+            inc_dedup = inc_ok.drop_duplicates("_code", keep="first").set_index("_code")
+            inc_by_code = inc_dedup["_inc"].to_dict()
     if cyrjg_csv and cyrjg_csv.exists():
         a_df = pd.read_csv(cyrjg_csv, dtype=str)
         date_col = "日期" if "日期" in a_df.columns else "公告日期"
@@ -128,9 +178,18 @@ def run(
         a_df[date_col] = pd.to_datetime(a_df[date_col], errors="coerce")
         a_df = a_df[a_df[date_col] >= date_ts]
         a_df["_pct"] = a_df["机构持有比例"].map(_parse_pct)
-        exclude_rows = a_df[a_df["_pct"].notna() & (a_df["_pct"] > 60)]
-        exclude_a = set(exclude_rows["基金代码"].dropna().map(_safe_code))
-        print(f"[a] 机构>60% 排除基金数: {len(exclude_a)}")
+        a_df["_code"] = a_df["基金代码"].map(_safe_code)
+        a_df = a_df[a_df["_code"] != ""]
+        two_years = pd.DateOffset(years=2)
+        for code, grp in a_df.groupby("_code"):
+            inc = inc_by_code.get(code)
+            if inc is None:
+                continue
+            cutoff = inc + two_years
+            sub = grp[grp[date_col] >= cutoff]
+            if _has_consecutive_over_60(sub, date_col):
+                exclude_a.add(code)
+        print(f"[a] 机构连续两次>60%(date后+成立>2年后) 排除基金数: {len(exclude_a)}")
     else:
         print("[a] cyrjg 不存在，跳过（视为全部通过）")
 

@@ -54,11 +54,11 @@ class FixedSelectionScoreStrategy(ScoreStrategy):
 
 def build_bundle_verify_e2e(allowed_symbols: list[str]) -> StrategyBundle:
     """构建 verify_e2e 策略包，每调仓日均持有 allowed_symbols 的等权组合。"""
-    # 仅保留纯数字基金代码（6~8 位），避免非预期格式
+    # 仅保留纯数字基金代码（6~8 位），排除全零（000000 等无效代码）
     valid = [
         s.zfill(6)
         for s in (str(x).strip() for x in allowed_symbols if x)
-        if s.isdigit() and 1 <= len(s) <= 8
+        if s.isdigit() and 1 <= len(s) <= 8 and int(s) != 0
     ]
     t = tuple(valid)
     return StrategyBundle(

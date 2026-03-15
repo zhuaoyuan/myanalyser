@@ -277,6 +277,16 @@ class TestBoundaryConditions(unittest.TestCase):
         bundle = build_bundle_verify_e2e(["000001", "", "000002"])
         self.assertEqual(bundle.filter_strategy.allowed_symbols, ("000001", "000002"))
 
+    def test_build_bundle_rejects_non_digit(self) -> None:
+        """边界：非数字代码被剔除，仅保留纯数字。"""
+        bundle = build_bundle_verify_e2e(["ABC123", "000001"])
+        self.assertEqual(bundle.filter_strategy.allowed_symbols, ("000001",))
+
+    def test_build_bundle_rejects_all_zeros(self) -> None:
+        """边界：全零代码（如 000000）被剔除。"""
+        bundle = build_bundle_verify_e2e(["000000", "000001"])
+        self.assertEqual(bundle.filter_strategy.allowed_symbols, ("000001",))
+
     def test_fixed_selection_filter_empty_universe(self) -> None:
         """边界：universe 为空。"""
         strat = FixedSelectionFilterStrategy(allowed_symbols=("000001",))

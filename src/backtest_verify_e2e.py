@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import re
 import subprocess
-import sys
 from io import StringIO
 from pathlib import Path
 
@@ -69,6 +68,11 @@ def _validate_clickhouse_db(name: str) -> None:
         raise ValueError(f"非法数据库名: {name!r}，仅允许字母数字下划线")
 
 
+def _validate_container_name(name: str) -> None:
+    if not re.match(r"^[a-zA-Z0-9_.-]+$", name):
+        raise ValueError(f"非法容器名: {name!r}，仅允许字母数字下划线短横点")
+
+
 def _validate_and_build_order_by(order_by: str) -> str:
     """校验并构建 ORDER BY 子句，仅允许白名单列名 + ASC/DESC。"""
     parts = []
@@ -83,7 +87,7 @@ def _validate_and_build_order_by(order_by: str) -> str:
         direction = tokens[1].upper() if len(tokens) > 1 else "ASC"
         if direction not in ("ASC", "DESC"):
             raise ValueError(f"ORDER BY 方向非法: {direction!r}，仅允许 ASC/DESC")
-        parts.append(f"{col} {direction}")
+        parts.append(f"{col.lower()} {direction}")
     if not parts:
         raise ValueError("ORDER BY 不能为空")
     return ", ".join(parts)
@@ -108,6 +112,7 @@ def _fetch_fund_selection(
     exclude_redeem_status: list[str],
 ) -> pd.DataFrame:
     _validate_clickhouse_db(clickhouse_db)
+    _validate_container_name(clickhouse_container)
     _validate_selection_where(selection_where)
     safe_order_by = _validate_and_build_order_by(selection_order_by)
     subscribe_filter = _build_status_filter("subscribe_status", exclude_subscribe_status)
@@ -151,7 +156,11 @@ def main() -> None:
     parser.add_argument("--top-n", type=int, default=5, help="持仓基金数量")
     parser.add_argument("--selection-rule-id", default="verify_e2e_top5")
     parser.add_argument("--selection-data-version", required=True, help="选基 data_version")
-    parser.add_argument("--selection-where", default="1")
+    parser.add_argument(
+        "--selection-where",
+        default="1",
+        help="选基 WHERE 条件，仅支持简单字面如 '1'，复杂条件需通过其他接口",
+    )
     parser.add_argument(
         "--selection-order-by",
         default="annual_return DESC, fund_code ASC",

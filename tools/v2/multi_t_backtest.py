@@ -11,7 +11,7 @@ from pathlib import Path
 import pandas as pd
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
-_MYANALYSER_ROOT = _SCRIPT_DIR.parent
+_MYANALYSER_ROOT = _SCRIPT_DIR.parent.parent  # tools/v2 -> tools -> myanalyser
 _SRC = _MYANALYSER_ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))

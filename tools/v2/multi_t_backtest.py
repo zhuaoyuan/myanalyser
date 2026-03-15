@@ -1,0 +1,501 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+from bisect import bisect_left, bisect_right
+from pathlib import Path
+
+import pandas as pd
+
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_MYANALYSER_ROOT = _SCRIPT_DIR.parent
+_SRC = _MYANALYSER_ROOT / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+from project_paths import project_root
+
+from backtest import load_fund_nav_data, run_backtest
+from backtest.engine import BacktestConfig, write_reports
+from backtest.strategies.registry import get_strategy_bundle, list_strategy_names
+from pipeline_scoreboard import run_pipeline as run_scoreboard
+from transforms.build_filtered_purchase_csv import build_filtered_purchase_csv
+from v2.compare.compare_adjusted_nav_and_cum_return_window import (
+    compare_adjusted_nav_and_cum_return_window,
+)
+from v2.filters.filter_funds_for_next_step import filter_funds_for_next_step
+from v2.filters.prep_eligible_window import run as run_prep_eligible_window
+from check_trade_day_data_integrity import (
+    load_trade_days,
+    load_eligible_fund_codes,
+    compute_integrity_for_fund,
+)
+
+
+logger = logging.getLogger(__name__)
+
+
+def _load_trade_calendar(trading_calendar_csv: Path) -> list[pd.Timestamp]:
+    trade_df = pd.read_csv(trading_calendar_csv, dtype={"trade_date": str}, encoding="utf-8-sig")
+    if "trade_date" not in trade_df.columns:
+        raise ValueError(f"交易日历缺少 trade_date 列: {trading_calendar_csv}")
+    trade_df["trade_date"] = pd.to_datetime(trade_df["trade_date"], errors="coerce")
+    dates = trade_df.dropna(subset=["trade_date"])["trade_date"].dt.normalize().unique().tolist()
+    return sorted(pd.Timestamp(d) for d in dates)
+
+
+def _resolve_trade_day(target: pd.Timestamp, trading_days: list[pd.Timestamp]) -> pd.Timestamp:
+    target = pd.Timestamp(target).normalize()
+    idx = bisect_right(trading_days, target) - 1
+    if idx < 0:
+        raise ValueError(f"date {target.date()} is earlier than trading calendar start")
+    return trading_days[idx]
+
+
+def _parse_t_list(raw: str) -> list[pd.Timestamp]:
+    items = [x.strip() for x in raw.split(",") if x.strip()]
+    if not items:
+        return []
+    return [pd.to_datetime(x) for x in items]
+
+
+def _build_t_list(
+    *,
+    t_list: str | None,
+    t_start: str | None,
+    t_end: str | None,
+    t_step: int | None,
+    trading_days: list[pd.Timestamp],
+) -> list[pd.Timestamp]:
+    if t_list:
+        raw_list = _parse_t_list(t_list)
+        resolved = {_resolve_trade_day(ts, trading_days) for ts in raw_list}
+        return sorted(resolved)
+
+    if not (t_start and t_end and t_step):
+        raise ValueError("must provide --t-list or (--t-start, --t-end, --t-step)")
+
+    start_ts = _resolve_trade_day(pd.to_datetime(t_start), trading_days)
+    end_ts = _resolve_trade_day(pd.to_datetime(t_end), trading_days)
+    if start_ts > end_ts:
+        raise ValueError(f"t-start cannot be after t-end: {t_start} > {t_end}")
+
+    start_idx = bisect_left(trading_days, start_ts)
+    end_idx = bisect_right(trading_days, end_ts) - 1
+    if start_idx < 0 or end_idx < 0:
+        raise ValueError("invalid trading calendar range for t-start/t-end")
+
+    indices = list(range(start_idx, end_idx + 1, int(t_step)))
+    return [trading_days[i] for i in indices]
+
+
+def _cache_dir(root: Path, *parts: str) -> Path:
+    return root.joinpath(*parts)
+
+
+def _ensure_compare_cache(
+    *,
+    base_dir: Path,
+    cache_dir: Path,
+    start_date: str,
+    end_date: str,
+) -> tuple[Path, Path]:
+    summary_csv = cache_dir / "summary.csv"
+    details_dir = cache_dir / "details"
+    if summary_csv.exists() and details_dir.exists():
+        logger.info("[compare] cache hit: %s", cache_dir)
+        return summary_csv, details_dir
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    result = compare_adjusted_nav_and_cum_return_window(
+        base_dir=base_dir,
+        start_date=start_date,
+        end_date=end_date,
+        output_dir=cache_dir,
+        error_log_path=cache_dir / "errors.jsonl",
+    )
+    return result["summary_csv"], result["detail_dir"]
+
+
+def _run_integrity_window(
+    *,
+    base_dir: Path,
+    trade_dates_csv: Path,
+    start_date: str,
+    end_date: str,
+    output_dir: Path,
+) -> tuple[Path, Path]:
+    fund_dir = base_dir / "fund_adjusted_nav_by_code"
+    overview_csv = base_dir / "fund_overview.csv"
+    trade_dates_csv = trade_dates_csv.resolve()
+
+    if not fund_dir.is_dir():
+        raise FileNotFoundError(f"未找到目录: {fund_dir}")
+    if not overview_csv.is_file():
+        raise FileNotFoundError(f"未找到文件: {overview_csv}")
+    if not trade_dates_csv.is_file():
+        raise FileNotFoundError(f"未找到交易日历文件: {trade_dates_csv}")
+
+    trade_days = load_trade_days(trade_dates_csv, start_date, end_date)
+    eligible_codes = load_eligible_fund_codes(overview_csv, start_date)
+
+    summary_output = output_dir / f"trade_day_integrity_summary_{start_date}_{end_date}.csv"
+    details_dir = output_dir / f"details_{start_date}_{end_date}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    details_dir.mkdir(parents=True, exist_ok=True)
+
+    summary_records = []
+    fund_files = sorted(fund_dir.glob("*.csv"))
+    processed_count = 0
+
+    for fund_csv in fund_files:
+        if fund_csv.stem not in eligible_codes:
+            continue
+        fund_code, ratio, detail_df = compute_integrity_for_fund(fund_csv, trade_days)
+        summary_records.append({"基金编码": fund_code, "数据完整比例": f"{ratio:.6f}"})
+        processed_count += 1
+
+        detail_output = details_dir / f"{fund_code}_{start_date}_{end_date}.csv"
+        detail_df.to_csv(detail_output, index=False, encoding="utf-8-sig")
+
+    summary_df = pd.DataFrame(summary_records, columns=["基金编码", "数据完整比例"])
+    summary_df.to_csv(summary_output, index=False, encoding="utf-8-sig")
+
+    logger.info(
+        "[integrity] trade_days=%d funds=%d included=%d -> %s",
+        len(trade_days),
+        len(fund_files),
+        processed_count,
+        summary_output,
+    )
+    return summary_output, details_dir
+
+
+def _ensure_integrity_cache(
+    *,
+    base_dir: Path,
+    cache_dir: Path,
+    trade_dates_csv: Path,
+    start_date: str,
+    end_date: str,
+) -> tuple[Path, Path]:
+    summary_csv = cache_dir / f"trade_day_integrity_summary_{start_date}_{end_date}.csv"
+    details_dir = cache_dir / f"details_{start_date}_{end_date}"
+    if summary_csv.exists() and details_dir.exists():
+        logger.info("[integrity] cache hit: %s", cache_dir)
+        return summary_csv, details_dir
+
+    return _run_integrity_window(
+        base_dir=base_dir,
+        trade_dates_csv=trade_dates_csv,
+        start_date=start_date,
+        end_date=end_date,
+        output_dir=cache_dir,
+    )
+
+
+def _read_allowed_codes(filter_csv: Path) -> set[str]:
+    df = pd.read_csv(filter_csv, dtype={"基金编码": str}, encoding="utf-8-sig")
+    if df.empty or "基金编码" not in df.columns:
+        return set()
+    if "是否过滤" in df.columns:
+        allowed_df = df[df["是否过滤"].astype(str).str.strip() == "否"]
+    else:
+        allowed_df = df
+    return {str(v).strip().zfill(6) for v in allowed_df["基金编码"].dropna().tolist()}
+
+
+def _extract_metrics(summary_csv: Path) -> dict[str, str]:
+    if not summary_csv.exists():
+        return {}
+    df = pd.read_csv(summary_csv, dtype=str, encoding="utf-8-sig")
+    metrics = {}
+    if df.empty:
+        return metrics
+    metric_df = df[df["section"] == "metrics_holding"] if "section" in df.columns else pd.DataFrame()
+    for _, row in metric_df.iterrows():
+        name = str(row.get("name", "")).strip()
+        val = str(row.get("value", "")).strip()
+        if name:
+            metrics[name] = val
+    return metrics
+
+
+def _run_scoreboard(
+    *,
+    purchase_csv: Path,
+    overview_csv: Path,
+    personnel_dir: Path,
+    nav_dir: Path,
+    output_dir: Path,
+    data_version: str,
+    as_of_date: str,
+    latest_nav_date: str,
+) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    args = argparse.Namespace(
+        purchase_csv=purchase_csv,
+        overview_csv=overview_csv,
+        personnel_dir=personnel_dir,
+        nav_dir=nav_dir,
+        output_dir=output_dir,
+        data_version=data_version,
+        as_of_date=as_of_date,
+        latest_nav_date=latest_nav_date,
+        stale_max_days=2,
+        code_limit=None,
+        skip_sinks=True,
+        formal_only=True,
+        resume=False,
+        apply_ddl=False,
+        mysql_ddl=Path("fund_db_infra/sql/mysql_schema.sql"),
+        clickhouse_ddl=Path("fund_db_infra/sql/clickhouse_schema.sql"),
+        mysql_host="127.0.0.1",
+        mysql_port=3306,
+        mysql_user="root",
+        mysql_password="your_strong_password",
+        mysql_db="fund_analysis",
+        clickhouse_host="127.0.0.1",
+        clickhouse_port=8123,
+        clickhouse_user="default",
+        clickhouse_password="",
+        clickhouse_db="fund_analysis",
+        clickhouse_container="fund_clickhouse",
+        clickhouse_write_profile="auto",
+        small_data_threshold_funds=200,
+        clickhouse_write_scope="full",
+    )
+    run_scoreboard(args)
+    scoreboard_csv = output_dir / f"fund_scoreboard_{data_version}.csv"
+    if not scoreboard_csv.exists():
+        raise FileNotFoundError(f"scoreboard output not found: {scoreboard_csv}")
+    return scoreboard_csv
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+    parser = argparse.ArgumentParser(description="v2 multi-T backtest runner (windowed cache)")
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--ruleset-version", required=True)
+    parser.add_argument("--t-list", default=None)
+    parser.add_argument("--t-start", default=None)
+    parser.add_argument("--t-end", default=None)
+    parser.add_argument("--t-step", type=int, default=None, help="step in trading days")
+    parser.add_argument("--lookback-years", type=int, default=3)
+    parser.add_argument("--hold-days", type=int, default=42)
+    parser.add_argument("--trading-calendar-csv", type=Path, required=True)
+    parser.add_argument("--prep-work-dir", type=Path, required=True)
+    parser.add_argument("--strategy", default="low_risk_debt", help=f"strategy name: {', '.join(list_strategy_names())}")
+    parser.add_argument("--max-funds", type=int, default=200)
+    parser.add_argument("--rebalance", type=int, default=20)
+    parser.add_argument("--top-n", type=int, default=3)
+    parser.add_argument("--warmup", type=int, default=243)
+    parser.add_argument("--initial-cash", type=float, default=100_000)
+    args = parser.parse_args()
+
+    run_id = args.run_id
+    ruleset_version = args.ruleset_version
+
+    workspace_root = project_root()
+    data_root = workspace_root / "data" / "versions" / run_id
+    fund_etl_dir = data_root / "fund_etl"
+    if not fund_etl_dir.is_dir():
+        raise FileNotFoundError(f"fund_etl dir not found: {fund_etl_dir}")
+
+    trading_calendar_csv = args.trading_calendar_csv.resolve()
+    trading_days = _load_trade_calendar(trading_calendar_csv)
+    t_list = _build_t_list(
+        t_list=args.t_list,
+        t_start=args.t_start,
+        t_end=args.t_end,
+        t_step=args.t_step,
+        trading_days=trading_days,
+    )
+    if not t_list:
+        raise ValueError("empty T list")
+
+    cache_root = data_root / "cache" / "v2"
+    output_root = workspace_root / "artifacts" / "backtest_multi" / run_id / ruleset_version
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    prep_work_dir = args.prep_work_dir.resolve()
+    if not prep_work_dir.is_dir():
+        raise FileNotFoundError(f"prep work dir not found: {prep_work_dir}")
+
+    summary_rows: list[dict[str, object]] = []
+
+    for t in t_list:
+        as_of_date = _resolve_trade_day(t, trading_days)
+        as_of_str = as_of_date.strftime("%Y-%m-%d")
+        start_date = (as_of_date - pd.DateOffset(years=args.lookback_years)).normalize()
+        start_str = start_date.strftime("%Y-%m-%d")
+        end_str = as_of_str
+
+        cache_key = f"{start_str}_{end_str}"
+        compare_dir = _cache_dir(cache_root, "compare", ruleset_version, cache_key)
+        integrity_dir = _cache_dir(cache_root, "integrity", ruleset_version, cache_key)
+        eligible_dir = _cache_dir(cache_root, "prep_eligible", ruleset_version, cache_key)
+        filter_dir = _cache_dir(cache_root, "filter", ruleset_version, cache_key)
+        scoreboard_dir = _cache_dir(cache_root, "scoreboard", ruleset_version, as_of_str, cache_key)
+
+        logger.info("[T=%s] start window %s -> %s", as_of_str, start_str, end_str)
+
+        compare_summary, compare_details = _ensure_compare_cache(
+            base_dir=fund_etl_dir,
+            cache_dir=compare_dir,
+            start_date=start_str,
+            end_date=end_str,
+        )
+
+        integrity_summary, integrity_details = _ensure_integrity_cache(
+            base_dir=fund_etl_dir,
+            cache_dir=integrity_dir,
+            trade_dates_csv=trading_calendar_csv,
+            start_date=start_str,
+            end_date=end_str,
+        )
+
+        eligible_csv = eligible_dir / "eligible_fund_candidates.csv"
+        if eligible_csv.exists():
+            logger.info("[eligible] cache hit: %s", eligible_csv)
+        else:
+            eligible_dir.mkdir(parents=True, exist_ok=True)
+            run_prep_eligible_window(
+                work_dir=prep_work_dir,
+                start_date=start_str,
+                end_date=end_str,
+                output_path=eligible_csv,
+                logger=logger,
+            )
+
+        filter_csv = filter_dir / "filtered_fund_candidates.csv"
+        if filter_csv.exists():
+            logger.info("[filter] cache hit: %s", filter_csv)
+        else:
+            filter_dir.mkdir(parents=True, exist_ok=True)
+            filter_df = filter_funds_for_next_step(
+                purchase_csv=eligible_csv,
+                overview_csv=fund_etl_dir / "fund_overview.csv",
+                nav_dir=fund_etl_dir / "fund_nav_by_code",
+                adjusted_nav_dir=fund_etl_dir / "fund_adjusted_nav_by_code",
+                compare_details_dir=compare_details,
+                integrity_details_dir=integrity_details,
+                start_date=start_str,
+                end_date=end_str,
+            )
+            filter_df.to_csv(filter_csv, index=False, encoding="utf-8-sig")
+            logger.info("[filter] write %s", filter_csv)
+
+        allowed_codes = _read_allowed_codes(filter_csv)
+        if not allowed_codes:
+            raise ValueError(f"filtered candidates empty for T={as_of_str}")
+
+        purchase_filtered_csv = filter_dir / "fund_purchase_for_step10_filtered.csv"
+        if not purchase_filtered_csv.exists():
+            build_filtered_purchase_csv(
+                purchase_csv=eligible_csv,
+                filter_csv=filter_csv,
+                output_csv=purchase_filtered_csv,
+            )
+
+        scoreboard_csv = scoreboard_dir / f"fund_scoreboard_{run_id}_{ruleset_version}_{as_of_str}.csv"
+        if scoreboard_csv.exists():
+            logger.info("[scoreboard] cache hit: %s", scoreboard_csv)
+        else:
+            scoreboard_dir.mkdir(parents=True, exist_ok=True)
+            scoreboard_csv = _run_scoreboard(
+                purchase_csv=purchase_filtered_csv,
+                overview_csv=fund_etl_dir / "fund_overview.csv",
+                personnel_dir=fund_etl_dir / "fund_personnel_by_code",
+                nav_dir=fund_etl_dir / "fund_adjusted_nav_by_code",
+                output_dir=scoreboard_dir,
+                data_version=f"{run_id}_{ruleset_version}_{as_of_str}",
+                as_of_date=as_of_str,
+                latest_nav_date=as_of_str,
+            )
+
+        t_index = bisect_left(trading_days, as_of_date)
+        end_index = t_index + args.hold_days
+        if end_index >= len(trading_days):
+            raise ValueError(f"hold-days exceeds trading calendar end for T={as_of_str}")
+        backtest_end = trading_days[end_index]
+        backtest_end_str = backtest_end.strftime("%Y-%m-%d")
+
+        data = load_fund_nav_data(
+            fund_etl_dir / "fund_adjusted_nav_by_code",
+            max_funds=args.max_funds,
+            start_date=as_of_str,
+            end_date=backtest_end_str,
+            allowed_codes=allowed_codes,
+        )
+
+        bundle = get_strategy_bundle(args.strategy)
+        config = BacktestConfig(initial_cash=args.initial_cash)
+        backtest_result = run_backtest(
+            data,
+            bundle,
+            start_date=as_of_str,
+            end_date=backtest_end_str,
+            top_n=args.top_n,
+            rebalance_period=args.rebalance,
+            warmup=args.warmup,
+            config=config,
+        )
+
+        t_output_dir = output_root / as_of_str
+        reports = write_reports(
+            t_output_dir,
+            backtest_result,
+            data,
+            run_config={
+                "strategy": args.strategy,
+                "start_date": as_of_str,
+                "end_date": backtest_end_str,
+                "rebalance": args.rebalance,
+                "top_n": args.top_n,
+                "warmup": args.warmup,
+                "initial_cash": args.initial_cash,
+                "nav_dir": str((fund_etl_dir / "fund_adjusted_nav_by_code").resolve()),
+                "max_funds": args.max_funds,
+                "run_id": run_id,
+                "ruleset_version": ruleset_version,
+                "filter_start": start_str,
+                "filter_end": end_str,
+            },
+            initial_cash=config.initial_cash,
+        )
+
+        metrics = _extract_metrics(reports["summary"])
+        summary_rows.append(
+            {
+                "as_of_date": as_of_str,
+                "filter_start": start_str,
+                "filter_end": end_str,
+                "backtest_start": as_of_str,
+                "backtest_end": backtest_end_str,
+                "allowed_funds": len(allowed_codes),
+                "compare_summary": str(compare_summary),
+                "integrity_summary": str(integrity_summary),
+                "eligible_csv": str(eligible_csv),
+                "filter_csv": str(filter_csv),
+                "scoreboard_csv": str(scoreboard_csv),
+                "summary_csv": str(reports["summary"]),
+                "detail_csv": str(reports["detail"]),
+                "report_md": str(reports["report_md"]),
+                **metrics,
+            }
+        )
+
+        logger.info("[T=%s] done -> %s", as_of_str, t_output_dir)
+
+    summary_df = pd.DataFrame(summary_rows)
+    summary_csv = output_root / "multi_summary.csv"
+    summary_df.to_csv(summary_csv, index=False, encoding="utf-8-sig")
+    logger.info("[multi] summary -> %s", summary_csv)
+
+
+if __name__ == "__main__":
+    main()

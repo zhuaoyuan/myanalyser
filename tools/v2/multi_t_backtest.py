@@ -460,7 +460,8 @@ def main() -> None:
         backtest_end = trading_days[end_index]
         backtest_end_str = backtest_end.strftime("%Y-%m-%d")
 
-        # 使用 lookback 起始日，使 MostStableFilterStrategy 等策略能在 T 日有足够历史数据计算 3 年指标
+        # 使用 lookback 起始日，使 MostStableFilterStrategy 等策略能在 T 日有足够历史数据计算 3 年指标。
+        # 注意：max_funds 较大时加载窗口变长会增加内存占用。
         data = load_fund_nav_data(
             fund_etl_dir / "fund_adjusted_nav_by_code",
             max_funds=args.max_funds,
@@ -468,6 +469,16 @@ def main() -> None:
             end_date=backtest_end_str,
             allowed_codes=allowed_codes,
         )
+        if "date" in data.long_df.columns:
+            min_avail = data.long_df["date"].min()
+            start_ts = pd.to_datetime(start_str)
+            if min_avail is not None and pd.notna(min_avail) and min_avail > start_ts:
+                logger.warning(
+                    "[T=%s] 数据实际起始晚于 lookback 起始，策略可能缺少足够历史: %s > %s",
+                    as_of_str,
+                    min_avail,
+                    start_str,
+                )
 
         bundle = get_strategy_bundle(args.strategy)
         config = BacktestConfig(initial_cash=args.initial_cash)

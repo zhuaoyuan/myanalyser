@@ -2,19 +2,25 @@
 
 set -euo pipefail
 
-# 用法速览（在仓库根目录执行）：
-# 1) 默认启动（要求工作区干净）：
-#    bash myanalyser/tools/start_isolated_pipeline.sh
-# 2) 允许未提交改动（仅记录状态，不会进入冻结运行代码）：
-#    bash myanalyser/tools/start_isolated_pipeline.sh --allow-dirty
-# 3) 指定本次运行的 purchase csv：
-#    bash myanalyser/tools/start_isolated_pipeline.sh @/abs/path/fund_purchase.csv
-# 4) 指定运行目录：
-#    bash myanalyser/tools/start_isolated_pipeline.sh --target-dir /path/to/run_dir
-# 5) 指定共享虚拟环境（推荐）：
-#    bash myanalyser/tools/start_isolated_pipeline.sh --venv /Users/zhuaoyuan/cursor-workspace/finance/myanalyser/.venv312
-# 6) 指定固定 run_id（支持断点重跑复用同一 worktree）：
-#    bash myanalyser/tools/start_isolated_pipeline.sh --run-id 20260228_114010_full_run
+# 样例：
+# cd /Users/zhuaoyuan/cursor-workspace/finance && \
+# RUN_ID="20260315_prep_result_run" \
+# DATA_VERSION="20260315_prep_result_run_db" \
+# ETL_MAX_RETRIES=3 \
+# ETL_RETRY_SLEEP=1.0 \
+# ETL_MAX_WORKERS=8 \
+# ETL_PROGRESS_INTERVAL=5.0 \
+# STALE_MAX_DAYS=2 \
+# INTEGRITY_START_DATE=2021-01-01 \
+# INTEGRITY_END_DATE=2026-03-15 \
+# FILTER_START_DATE=2023-01-01 \
+# FILTER_MAX_ABS_DEVIATION=0.05 \
+# BONUS_SPLIT_REVISE_ROOT="/Users/zhuaoyuan/cursor-workspace/finance/myanalyser/data/common/revise/20260310_final" \
+# bash myanalyser/tools/start_isolated_pipeline.sh \
+#   --allow-dirty \
+#   --venv /Users/zhuaoyuan/cursor-workspace/finance/myanalyser/.venv312 \
+#   --run-id 20260315_prep_result_run \
+#   @myanalyser/data/common/cached_prep/20260314/prep_result.csv
 
 usage() {
   cat <<'EOF'

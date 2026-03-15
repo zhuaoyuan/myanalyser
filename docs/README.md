@@ -53,7 +53,7 @@ myanalyser/
 - `src/transforms/build_effective_purchase_csv.py`：从 `fund_purchase` 剔除黑名单生成 `fund_purchase_effective.csv`（供 prep 或独立调用；主流水线已不依赖，黑名单在 prep 阶段处理）
 - `src/transforms/build_filtered_purchase_csv.py`：根据过滤结果生成 `fund_purchase_for_step10_filtered.csv`
 - `src/compute_fund_composite_score.py`：基金综合得分计算（对 filtered/scoreboard CSV 做归一化+分组加权，输出带得分的 CSV）
-- `src/filter_score/`：筛选与打分模块（入口 `filter_and_score_main.py`，可扩展过滤与算分策略，内置样例：最稳健原则过滤、低风险偏债得分）
+- `src/filter_score/`：筛选与打分模块（入口 `filter_and_score_main.py`，可扩展过滤与算分策略，内置样例：最稳健原则过滤、低风险偏债得分）；最稳健规则逻辑位于共享模块 `most_stable_logic`
 - `src/backtest/`：PyBroker 回测框架（数据加载、指标计算、策略包、**多过滤器链**）；CLI `tools/pybroker_fund_backtest.py`。策略包 `low_risk_debt_most_stable` 在筛选阶段应用最稳健原则（基于目标日前净值动态计算指标，与 `low_risk_debt` 类似）
 
 ### PyBroker 回测过滤器链

@@ -20,11 +20,12 @@ import argparse
 import sys
 from pathlib import Path
 
-_src = Path(__file__).resolve().parents[1] / "src"
+# 确保 myanalyser/src 在 path（与 pybroker_fund_backtest 一致）
+_src = Path(__file__).resolve().parents[2] / "src"
 if str(_src) not in sys.path:
     sys.path.insert(0, str(_src))
 
-from filter_score.filters.most_stable import filter_one
+from most_stable_logic import filter_one
 
 # 从 backtest 导入数据加载和指标计算
 from backtest.data import load_fund_nav_data

@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
+import sys
 from io import StringIO
 from pathlib import Path
 
@@ -19,12 +21,17 @@ from backtest import load_fund_nav_data, run_backtest
 from backtest.engine import BacktestConfig, write_reports
 from backtest.strategies.verify_e2e_top5 import build_bundle_verify_e2e
 
+# 选基 ORDER BY 允许的列名（防 SQL 注入）
+_ALLOWED_ORDER_COLS = frozenset(
+    {"annual_return", "fund_code", "annual_return_3y", "annual_return_1y", "max_drawdown"}
+)
+
 
 def _quote_sql(value: str) -> str:
     return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
-def _run_clickhouse_query(query: str, container_name: str) -> pd.DataFrame:
+def _run_clickhouse_query(query: str, container_name: str, timeout: int = 300) -> pd.DataFrame:
     cmd = [
         "docker",
         "exec",
@@ -35,7 +42,15 @@ def _run_clickhouse_query(query: str, container_name: str) -> pd.DataFrame:
         "--query",
         query,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, check=True, timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        raise SystemExit("ClickHouse 查询超时，请检查 docker 与数据库状态")
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or "").strip()
+        raise SystemExit(f"ClickHouse 查询失败: {stderr or str(e)}")
     text = result.stdout.strip()
     if not text:
         return pd.DataFrame()
@@ -49,6 +64,39 @@ def _build_status_filter(col_name: str, excluded_values: list[str]) -> str:
     return f"({col_name} NOT IN ({values}) OR {col_name} IS NULL)"
 
 
+def _validate_clickhouse_db(name: str) -> None:
+    if not re.match(r"^[a-zA-Z0-9_]+$", name):
+        raise ValueError(f"非法数据库名: {name!r}，仅允许字母数字下划线")
+
+
+def _validate_and_build_order_by(order_by: str) -> str:
+    """校验并构建 ORDER BY 子句，仅允许白名单列名 + ASC/DESC。"""
+    parts = []
+    for part in order_by.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        tokens = part.split()
+        col = tokens[0]
+        if col.lower() not in _ALLOWED_ORDER_COLS:
+            raise ValueError(f"ORDER BY 不允许的列: {col!r}，允许: {sorted(_ALLOWED_ORDER_COLS)}")
+        direction = tokens[1].upper() if len(tokens) > 1 else "ASC"
+        if direction not in ("ASC", "DESC"):
+            raise ValueError(f"ORDER BY 方向非法: {direction!r}，仅允许 ASC/DESC")
+        parts.append(f"{col} {direction}")
+    if not parts:
+        raise ValueError("ORDER BY 不能为空")
+    return ", ".join(parts)
+
+
+def _validate_selection_where(where: str) -> None:
+    """简单校验 selection_where，拒绝明显 SQL 注入特征。"""
+    dangerous = (";", "--", "/*", "*/", "'", '"', "\\")
+    for d in dangerous:
+        if d in where:
+            raise ValueError(f"selection_where 包含非法字符 {d!r}，仅允许简单条件如 '1'")
+
+
 def _fetch_fund_selection(
     clickhouse_db: str,
     clickhouse_container: str,
@@ -59,6 +107,9 @@ def _fetch_fund_selection(
     exclude_subscribe_status: list[str],
     exclude_redeem_status: list[str],
 ) -> pd.DataFrame:
+    _validate_clickhouse_db(clickhouse_db)
+    _validate_selection_where(selection_where)
+    safe_order_by = _validate_and_build_order_by(selection_order_by)
     subscribe_filter = _build_status_filter("subscribe_status", exclude_subscribe_status)
     redeem_filter = _build_status_filter("redeem_status", exclude_redeem_status)
     query = (
@@ -68,7 +119,7 @@ def _fetch_fund_selection(
         f"AND ({selection_where}) "
         f"AND {subscribe_filter} "
         f"AND {redeem_filter} "
-        f"ORDER BY {selection_order_by} "
+        f"ORDER BY {safe_order_by} "
         f"LIMIT {int(selection_limit)}"
     )
     df = _run_clickhouse_query(query, clickhouse_container)

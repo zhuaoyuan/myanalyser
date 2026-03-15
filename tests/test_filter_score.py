@@ -15,7 +15,7 @@ import pandas as pd
 
 from myanalyser.src.filter_score.base import load_filter_strategy, load_score_strategy
 from myanalyser.src.filter_score.filter_and_score_main import main, run_pipeline
-from myanalyser.src.filter_score.filters.most_stable import filter_one as filter_most_stable
+from myanalyser.src.most_stable_logic import filter_one as filter_most_stable
 from myanalyser.src.filter_score.filters.non_a_unlimited_purchase import (
     filter_one as filter_non_a_unlimited,
 )

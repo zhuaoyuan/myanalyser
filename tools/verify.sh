@@ -121,7 +121,7 @@
 # - 再运行 `backtest_verify_e2e.py`：
 #   - 2025 年区间
 #   - 固定规则 `verify_e2e_top5`
-#   - 从 ClickHouse 取选基和净值
+#   - 从 ClickHouse 取选基，净值从本地 fund_adjusted_nav_by_code 加载
 # - 断言回测明细与报告文件存在。
 # - 业务意义：验证“数据生产→入库→策略消费→结果输出”闭环可用。
 

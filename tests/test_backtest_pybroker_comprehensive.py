@@ -228,7 +228,7 @@ class TestNormalScenarios(unittest.TestCase):
     def test_most_stable_compute_metrics_integration(self) -> None:
         """_compute_most_stable_metrics 与 filter_one 对接：真实指标计算输出可被正确消费。"""
         from myanalyser.src.backtest.filters.most_stable_strategy import _compute_most_stable_metrics
-        from myanalyser.src.filter_score.filters.most_stable import filter_one
+        from myanalyser.src.most_stable_logic import filter_one
 
         data = _make_backtest_data(n_symbols=2, n_days=800, trend_up=0.12)
         df = data.by_symbol["000001"]

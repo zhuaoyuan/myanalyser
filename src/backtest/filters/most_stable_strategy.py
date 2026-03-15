@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from filter_score.filters.most_stable import filter_one
+from most_stable_logic import filter_one
 from fund_metrics_core import WindowConfig
 from scoreboard_metrics import window_metrics
 

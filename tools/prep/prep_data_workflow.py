@@ -10,7 +10,7 @@
 4. 根据 x 获取基金费率全历史 (c)
 5. 根据 c 进行基金分类 (c.1)
 6. 根据 x 获取全体基金详情 (e)
-7. 筛选：x + c.1(存在) + a(未出现机构持有>60%) + b(曾规模>2亿) + e(date前成立) -> d.1
+7. 筛选：x + c.1(存在) + a(date后且成立>2年后机构持仓连续两次>60%则排除) + b(曾规模>2亿) + e(date前成立) -> d.1
 
 样例：
 python myanalyser/tools/prep/prep_data_workflow.py \
@@ -305,18 +305,50 @@ def _apply_filters(
     else:
         logger.warning("c.1 文件不存在，跳过该条件")
 
-    # a: 排除 date 至今出现过机构持有比例 > 60% 的基金
+    # a: 排除 date 之后、且基金成立大于2年后、机构持仓比例连续两次超过60%的基金
     if cyrjg_csv.exists():
         a_df = pd.read_csv(cyrjg_csv, dtype=str)
         date_col = "日期" if "日期" in a_df.columns else "公告日期"
         a_df = a_df.copy()
         a_df[date_col] = pd.to_datetime(a_df[date_col], errors="coerce")
-        a_df = a_df[a_df[date_col] >= date_ts]
+        a_df = a_df[a_df[date_col] >= date_ts]  # date 之后
         a_df["_pct"] = a_df["机构持有比例"].map(_parse_pct)
-        exclude_rows = a_df[a_df["_pct"].notna() & (a_df["_pct"] > 60)]
-        exclude_a = set(exclude_rows["基金代码"].dropna().map(_safe_code))
+
+        # 成立日期：用于「成立>2年后」过滤
+        inc_by_code: dict[str, pd.Timestamp] = {}
+        if overview_csv.exists():
+            e_df = pd.read_csv(overview_csv, dtype=str)
+            col = "成立日期/规模" if "成立日期/规模" in e_df.columns else "成立日期"
+            if col in e_df.columns:
+                e_df = e_df.copy()
+                e_df["_code"] = e_df["基金代码"].map(_safe_code)
+                e_df["_inc"] = e_df[col].map(_parse_date)
+                inc_ok = e_df[e_df["_inc"].notna() & (e_df["_code"] != "")]
+                inc_by_code = inc_ok.drop_duplicates("_code", keep="first").set_index("_code")["_inc"].to_dict()
+
+        def _has_consecutive_over_60(grp: pd.DataFrame) -> bool:
+            """该基金是否存在连续两次机构持仓>60%。"""
+            df = grp.dropna(subset=["_pct", date_col]).sort_values(date_col)
+            if len(df) < 2:
+                return False
+            vals = df["_pct"].values
+            for i in range(len(vals) - 1):
+                if vals[i] > 60 and vals[i + 1] > 60:
+                    return True
+            return False
+
+        exclude_a: set[str] = set()
+        two_years = pd.DateOffset(years=2)
+        for code, grp in a_df.groupby(a_df["基金代码"].map(_safe_code)):
+            inc = inc_by_code.get(code)
+            if inc is None:
+                continue  # 无成立日期则无法判断「成立>2年后」，不排除
+            cutoff = inc + two_years
+            sub = grp[grp[date_col] >= cutoff]
+            if _has_consecutive_over_60(sub):
+                exclude_a.add(code)
         codes -= exclude_a
-        logger.info("[筛选] a(无机构>60%%) 后 %d，排除 %d", len(codes), len(exclude_a))
+        logger.info("[筛选] a(date后+成立>2年后+连续两次>60%%排除) 后 %d，排除 %d", len(codes), len(exclude_a))
     else:
         logger.warning("a 文件不存在，跳过该条件")
 

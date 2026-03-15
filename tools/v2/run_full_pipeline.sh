@@ -256,7 +256,7 @@ else
     --bonus-dir "${BONUS_DIR_FOR_ADJ}" \
     --split-dir "${SPLIT_DIR_FOR_ADJ}" \
     --output-dir "${FUND_ETL_DIR}/fund_adjusted_nav_by_code" \
-    --allow-missing-event-until 2020-12-31 \
+    --allow-missing-event-until 2000-12-31 \
     --fail-log "${LOGS_DIR}/failed_adjusted_nav.jsonl"
   assert_dir_has_csv "${FUND_ETL_DIR}/fund_adjusted_nav_by_code"
   mark_checkpoint "step3_adjusted_nav"

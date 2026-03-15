@@ -246,6 +246,9 @@ def run_backtest(
         pyb.param("target_weights", weights)
         pyb.param("rebalance_date", current_ts)
 
+    # rebalance_period<=0 时仅在首日调仓、买后持有；pybroker 要求 hold_bars>0，用大值表示持有至期末
+    effective_hold_bars = rebalance_period if rebalance_period > 0 else 2430  # ~10 年交易日
+
     def execute(ctx: ExecContext):
         if not pyb.param("do_rebalance"):
             return
@@ -255,14 +258,18 @@ def run_backtest(
             if ctx.symbol not in target_weights or target <= 0:
                 ctx.sell_all_shares()
             else:
-                ctx.buy_shares = ctx.calc_target_shares(target)
-                ctx.hold_bars = rebalance_period
+                buy_shares = ctx.calc_target_shares(target)
+                if buy_shares and buy_shares > 0:
+                    ctx.buy_shares = buy_shares
+                    ctx.hold_bars = effective_hold_bars
         else:
             if ctx.symbol in target_weights:
                 target = target_weights.get(ctx.symbol, 0.0)
                 if target > 0:
-                    ctx.buy_shares = ctx.calc_target_shares(target)
-                    ctx.hold_bars = rebalance_period
+                    buy_shares = ctx.calc_target_shares(target)
+                    if buy_shares and buy_shares > 0:
+                        ctx.buy_shares = buy_shares
+                        ctx.hold_bars = effective_hold_bars
 
     config = StrategyConfig(
         initial_cash=cfg.initial_cash,
@@ -279,7 +286,9 @@ def run_backtest(
     strategy = Strategy(data.long_df, start_ts, end_ts, config=config)
     strategy.set_before_exec(before_exec)
     strategy.add_execution(execute, symbols)
-    result = strategy.backtest(warmup=warmup)
+    # pybroker 要求 warmup > 0；当用户传 0 时用 None 表示无预热
+    effective_warmup = None if warmup == 0 else warmup
+    result = strategy.backtest(warmup=effective_warmup)
 
     return BacktestResult(result=result, period_log=period_log)
 

@@ -1,6 +1,37 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+# python myanalyser/tools/v2/multi_t_backtest.py \
+#   --run-id "20260315_123456_full_run_v2" \
+#   --ruleset-version "20260315_v1" \
+#   --t-list "2023-01-03,2023-07-03,2024-01-02,2024-07-01" \
+#   --trading-calendar-csv "myanalyser/data/common/trade_dates.csv" \
+#   --prep-work-dir "myanalyser/tmp/prep_work_v2" \
+#   --lookback-years 3 \
+#   --hold-days 21 \
+#   --strategy "low_risk_debt_most_stable" \
+#   --max-funds 5000 \
+#   --rebalance 0 \
+#   --top-n 5 \
+#   --warmup 0 \
+#   --initial-cash 100000    
+
+# python myanalyser/tools/v2/multi_t_backtest.py \
+#   --run-id "20260315_123456_full_run_v2" \
+#   --ruleset-version "20260315_v2" \
+#   --t-start 2010-01-01 --t-end 2026-03-01 --t-step 25 \
+#   --trading-calendar-csv "myanalyser/data/common/trade_dates.csv" \
+#   --prep-work-dir "myanalyser/tmp/prep_work_v2" \
+#   --lookback-years 3 \
+#   --hold-days 42 \
+#   --strategy "low_risk_debt_most_stable" \
+#   --max-funds 5000 \
+#   --rebalance 0 \
+#   --top-n 5 \
+#   --warmup 0 \
+#   --initial-cash 100000    
+
+
 import argparse
 import logging
 import os
@@ -429,10 +460,11 @@ def main() -> None:
         backtest_end = trading_days[end_index]
         backtest_end_str = backtest_end.strftime("%Y-%m-%d")
 
+        # 使用 lookback 起始日，使 MostStableFilterStrategy 等策略能在 T 日有足够历史数据计算 3 年指标
         data = load_fund_nav_data(
             fund_etl_dir / "fund_adjusted_nav_by_code",
             max_funds=args.max_funds,
-            start_date=as_of_str,
+            start_date=start_str,
             end_date=backtest_end_str,
             allowed_codes=allowed_codes,
         )

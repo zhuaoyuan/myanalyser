@@ -162,13 +162,13 @@ def test_apply_filters_exclude_org_over_60(tmp_path: Path) -> None:
         "机构持有比例": ["50%", "55%", "65%", "70%", "65%"],
     }).to_csv(tmp_path / "a.csv", index=False, encoding="utf-8-sig")
     pd.DataFrame({
-        "基金代码": ["000001", "000002"],
-        "日期": ["2024-06-01", "2024-06-01"],
-        "期末净资产（亿元）": ["5", "3"],
+        "基金代码": ["000001", "000002", "000003"],
+        "日期": ["2024-06-01", "2024-06-01", "2024-06-01"],
+        "期末净资产（亿元）": ["5", "3", "4"],
     }).to_csv(tmp_path / "b.csv", index=False, encoding="utf-8-sig")
     pd.DataFrame({
-        "基金代码": ["000001", "000002"],
-        "成立日期/规模": ["2020-01-01", "2021-06-15"],
+        "基金代码": ["000001", "000002", "000003"],
+        "成立日期/规模": ["2020-01-01", "2021-06-15", "2020-06-01"],
     }).to_csv(tmp_path / "e.csv", index=False, encoding="utf-8-sig")
 
     logger = logging.getLogger("test")
@@ -177,8 +177,9 @@ def test_apply_filters_exclude_org_over_60(tmp_path: Path) -> None:
         tmp_path / "a.csv", tmp_path / "b.csv", tmp_path / "c1.csv", tmp_path / "e.csv",
         logger,
     )
-    assert len(result) == 1
-    assert result.iloc[0]["基金代码"].zfill(6) == "000001"
+    assert len(result) == 2
+    result_codes = set(result["基金代码"].str.zfill(6))
+    assert result_codes == {"000001", "000003"}
 
 
 def test_apply_filters_boundary_org_exactly_60(tmp_path: Path) -> None:

@@ -175,6 +175,87 @@ class TestNormalScenarios(unittest.TestCase):
         self.assertIsNotNone(bundle.position_strategy)
 
 
+# ==================== 验证函数（防 SQL 注入等）====================
+
+
+class TestValidationFunctions(unittest.TestCase):
+    """验证函数：_validate_clickhouse_db、_validate_container_name、_validate_selection_where、_validate_and_build_order_by。"""
+
+    def test_validate_clickhouse_db_valid(self) -> None:
+        """正常：合法数据库名通过。"""
+        backtest_verify_e2e._validate_clickhouse_db("fund_analysis")
+        backtest_verify_e2e._validate_clickhouse_db("db123_abc")
+
+    def test_validate_clickhouse_db_invalid(self) -> None:
+        """异常：非法数据库名抛 ValueError。"""
+        for invalid in ("fund;drop", "db-name", "db.name", "数据库"):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ValueError) as ctx:
+                    backtest_verify_e2e._validate_clickhouse_db(invalid)
+                self.assertIn("非法数据库名", str(ctx.exception))
+
+    def test_validate_container_name_valid(self) -> None:
+        """正常：合法容器名通过。"""
+        backtest_verify_e2e._validate_container_name("fund_clickhouse")
+        backtest_verify_e2e._validate_container_name("clickhouse-1.2")
+        backtest_verify_e2e._validate_container_name("ch_db.prod")
+
+    def test_validate_container_name_invalid(self) -> None:
+        """异常：非法容器名抛 ValueError。"""
+        with self.assertRaises(ValueError) as ctx:
+            backtest_verify_e2e._validate_container_name("bad;container")
+        self.assertIn("非法容器名", str(ctx.exception))
+
+    def test_validate_selection_where_valid(self) -> None:
+        """正常：简单条件 '1' 通过。"""
+        backtest_verify_e2e._validate_selection_where("1")
+
+    def test_validate_selection_where_invalid(self) -> None:
+        """异常：包含 SQL 注入特征抛 ValueError。"""
+        for d in (";", "--", "/*", "*/", "'", '"', "\\"):
+            with self.subTest(danger=d):
+                with self.assertRaises(ValueError) as ctx:
+                    backtest_verify_e2e._validate_selection_where(f"1{d}drop")
+                self.assertIn("非法字符", str(ctx.exception))
+
+    def test_validate_and_build_order_by_valid(self) -> None:
+        """正常：白名单列名 + ASC/DESC 通过，列名统一 lower。"""
+        out = backtest_verify_e2e._validate_and_build_order_by("annual_return DESC")
+        self.assertEqual(out, "annual_return DESC")
+        out2 = backtest_verify_e2e._validate_and_build_order_by(
+            "annual_return DESC, fund_code ASC"
+        )
+        self.assertEqual(out2, "annual_return DESC, fund_code ASC")
+        out3 = backtest_verify_e2e._validate_and_build_order_by("fund_code")
+        self.assertEqual(out3, "fund_code ASC")
+        out4 = backtest_verify_e2e._validate_and_build_order_by("ANNUAL_RETURN DESC")
+        self.assertEqual(out4, "annual_return DESC")
+
+    def test_validate_and_build_order_by_invalid_column(self) -> None:
+        """异常：非法列名抛 ValueError。"""
+        with self.assertRaises(ValueError) as ctx:
+            backtest_verify_e2e._validate_and_build_order_by("evil_col DESC")
+        self.assertIn("ORDER BY 不允许的列", str(ctx.exception))
+
+    def test_validate_and_build_order_by_invalid_direction(self) -> None:
+        """异常：非法排序方向抛 ValueError。"""
+        with self.assertRaises(ValueError) as ctx:
+            backtest_verify_e2e._validate_and_build_order_by("annual_return RANDOM")
+        self.assertIn("ORDER BY 方向非法", str(ctx.exception))
+
+    def test_validate_and_build_order_by_empty(self) -> None:
+        """异常：空 order_by 抛 ValueError。"""
+        with self.assertRaises(ValueError) as ctx:
+            backtest_verify_e2e._validate_and_build_order_by("")
+        self.assertIn("ORDER BY 不能为空", str(ctx.exception))
+
+    def test_validate_order_by_blank_parts_only(self) -> None:
+        """异常：仅逗号/空格 order_by 抛 ValueError。"""
+        with self.assertRaises(ValueError) as ctx:
+            backtest_verify_e2e._validate_and_build_order_by("  ,  , ")
+        self.assertIn("不能为空", str(ctx.exception))
+
+
 # ==================== 异常场景 ====================
 
 
@@ -285,6 +366,16 @@ class TestBoundaryConditions(unittest.TestCase):
     def test_build_bundle_rejects_all_zeros(self) -> None:
         """边界：全零代码（如 000000）被剔除。"""
         bundle = build_bundle_verify_e2e(["000000", "000001"])
+        self.assertEqual(bundle.filter_strategy.allowed_symbols, ("000001",))
+
+    def test_build_bundle_8digit_code(self) -> None:
+        """边界：8 位数字代码保留。"""
+        bundle = build_bundle_verify_e2e(["12345678"])
+        self.assertEqual(bundle.filter_strategy.allowed_symbols, ("12345678",))
+
+    def test_build_bundle_rejects_9digit_code(self) -> None:
+        """边界：超过 8 位数字代码被剔除。"""
+        bundle = build_bundle_verify_e2e(["123456789", "000001"])
         self.assertEqual(bundle.filter_strategy.allowed_symbols, ("000001",))
 
     def test_fixed_selection_filter_empty_universe(self) -> None:

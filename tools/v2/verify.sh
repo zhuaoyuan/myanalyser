@@ -183,6 +183,7 @@ fi
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)_verify_e2e}"
 DATA_VERSION="${DATA_VERSION:-${RUN_ID}_db}"
 MYSQL_PASSWORD="${MYSQL_PASSWORD:-your_strong_password}"
+# 生产环境请显式设置 MYSQL_PASSWORD，避免使用默认值。
 VERIFY_ROOT="${PROJECT_ROOT}/data/versions/${RUN_ID}"
 FUND_ETL_DIR="${VERIFY_ROOT}/fund_etl"
 LOGS_DIR="${VERIFY_ROOT}/logs"

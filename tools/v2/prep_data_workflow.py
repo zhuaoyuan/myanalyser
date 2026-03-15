@@ -118,13 +118,15 @@ def _step_b_gmbd(
         tmp_purchase = work_dir / "_tmp_gmbd_purchase.csv"
         tmp_df = pd.DataFrame({"基金代码": to_fetch})
         tmp_df.to_csv(tmp_purchase, index=False, encoding="utf-8-sig")
-        ok = _run_cli(
-            "fetch_fund_gmbd.py",
-            ["-i", str(tmp_purchase), "-o", str(tmp_out), "--delay", str(delay)],
-            logger,
-        )
-        if not ok:
-            raise RuntimeError("基金规模抓取失败")
+    ok = _run_cli(
+        "fetch_fund_gmbd.py",
+        ["-i", str(tmp_purchase), "-o", str(tmp_out), "--delay", str(delay)],
+        logger,
+    )
+    if not ok:
+        raise RuntimeError("基金规模抓取失败")
+    if not tmp_out.exists():
+        raise FileNotFoundError(f"fund_gmbd 输出缺失: {tmp_out}")
         fetched = pd.read_csv(tmp_out, dtype=str, encoding="utf-8-sig") if tmp_out.exists() else pd.DataFrame()
         if existing is not None and not fetched.empty:
             merged = pd.concat([existing, fetched], ignore_index=True)
@@ -186,6 +188,8 @@ def _step_c_fee(
     )
     if not ok:
         raise RuntimeError("基金费率抓取失败")
+    if not tmp_out.exists():
+        raise FileNotFoundError(f"fund_fee 输出缺失: {tmp_out}")
 
     fetched = pd.read_csv(tmp_out, dtype=str, encoding="utf-8-sig") if tmp_out.exists() else pd.DataFrame()
     if existing is not None and not fetched.empty:
@@ -267,11 +271,11 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description="v2 预备数据工作流（宽存）：只抓取全量原始数据")
     parser.add_argument("--work-dir", type=Path, default=None, help="工作目录，默认 myanalyser/tmp/prep_work_v2")
-    parser.add_argument("--purchase-csv", type=Path, default=None, help="已有基金购买 CSV，传入则跳过 step1")
-    parser.add_argument("--cyrjg-csv", type=Path, default=None, help="已有持有人比例 CSV，传入则直接使用")
-    parser.add_argument("--gmbd-csv", type=Path, default=None, help="已有规模 CSV，传入则增量查询")
-    parser.add_argument("--fee-csv", type=Path, default=None, help="已有费率 CSV，传入则增量查询")
-    parser.add_argument("--overview-csv", type=Path, default=None, help="已有基金详情 CSV，传入则增量查询")
+    parser.add_argument("--purchase-csv", type=Path, default=None, help="已有基金购买 CSV（必须存在），传入则跳过 step1")
+    parser.add_argument("--cyrjg-csv", type=Path, default=None, help="已有持有人比例 CSV（必须存在），传入则直接使用")
+    parser.add_argument("--gmbd-csv", type=Path, default=None, help="已有规模 CSV（必须存在），传入则增量查询")
+    parser.add_argument("--fee-csv", type=Path, default=None, help="已有费率 CSV（必须存在），传入则增量查询")
+    parser.add_argument("--overview-csv", type=Path, default=None, help="已有基金详情 CSV（必须存在），传入则增量查询")
     parser.add_argument("--delay", type=float, default=0.1, help="请求间隔秒数")
     args = parser.parse_args()
 

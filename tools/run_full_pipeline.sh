@@ -47,7 +47,6 @@
 #    BONUS_SPLIT_REVISE_ROOT  分红/拆分投票历史修订 fund_etl 目录（为空则跳过投票）
 #    DB_INFRA_DIR           fund_db_infra 目录（默认：自动向上查找）
 #    TRADE_DATES_CSV        交易日历 CSV 路径（默认：自动查找）
-#    FUND_BLACKLIST_PATH    基金黑名单 CSV（默认：myanalyser/data/common/fund_blacklist.csv）
 #
 # 注意：
 # - 仅支持 0 或 1 个位置参数；若传入，必须是 @<csv_path> 格式。
@@ -206,21 +205,8 @@ FILTER_START_DATE="${FILTER_START_DATE:-2023-01-01}"
 FILTER_MAX_ABS_DEVIATION="${FILTER_MAX_ABS_DEVIATION:-0.02}"
 FILTER_RESULT_CSV="${ARTIFACTS_DIR}/filtered_fund_candidates.csv"
 FILTERED_PURCHASE_CSV="${FUND_ETL_DIR}/fund_purchase_for_step10_filtered.csv"
-FUND_PURCHASE_EFFECTIVE_CSV="${FUND_ETL_DIR}/fund_purchase_effective.csv"
-if [[ -n "${FUND_BLACKLIST_PATH:-}" ]]; then
-  if [[ "${FUND_BLACKLIST_PATH}" != /* ]]; then
-    FUND_BLACKLIST_PATH="$(cd "${PROJECT_ROOT}" && cd "$(dirname "${FUND_BLACKLIST_PATH}")" && pwd)/$(basename "${FUND_BLACKLIST_PATH}")"
-  fi
-else
-  FUND_BLACKLIST_PATH="${PROJECT_ROOT}/data/common/fund_blacklist.csv"
-  if [[ ! -f "${FUND_BLACKLIST_PATH}" ]]; then
-    FUND_BLACKLIST_PATH="$(find_file_upward "${PROJECT_ROOT}" "myanalyser/data/common/fund_blacklist.csv" || true)"
-  fi
-  if [[ -z "${FUND_BLACKLIST_PATH}" ]]; then
-    echo "[full-run] cannot locate fund_blacklist.csv from ${PROJECT_ROOT}; set FUND_BLACKLIST_PATH explicitly"
-    exit 1
-  fi
-fi
+# 黑名单剔除已前置到 prep 阶段，fund_purchase 即为有效清单
+FUND_PURCHASE_EFFECTIVE_CSV="${FUND_ETL_DIR}/fund_purchase.csv"
 INTEGRITY_DETAILS_DIR="${ARTIFACTS_DIR}/trade_day_integrity_reports/details_${INTEGRITY_START_DATE}_${INTEGRITY_END_DATE}"
 INTEGRITY_SUMMARY_CSV="${ARTIFACTS_DIR}/trade_day_integrity_reports/trade_day_integrity_summary_${INTEGRITY_START_DATE}_${INTEGRITY_END_DATE}.csv"
 COMPARE_SUMMARY_CSV="${ARTIFACTS_DIR}/fund_return_compare/summary.csv"
@@ -323,8 +309,6 @@ if df.empty:
     raise SystemExit(3)
 PY
 }
-
-assert_file_exists "${FUND_BLACKLIST_PATH}"
 
 checkpoint_path() {
   local step="$1"
@@ -438,18 +422,12 @@ if logs_dir.exists():
                 stage = str(rec.get("stage", "unknown")).strip() or "unknown"
                 error_stage_count[stage] = error_stage_count.get(stage, 0) + 1
 
-purchase_original = None
-blacklist_removed = None
 purchase_effective = None
 purchase_after = None
 filtered_yes = None
+# fund_purchase 由 prep 前置处理，直接作为有效基金数
 if (fund_etl_dir / "fund_purchase.csv").exists():
-    purchase_original = len(pd.read_csv(fund_etl_dir / "fund_purchase.csv", dtype=str, encoding="utf-8-sig"))
-effective_path = fund_etl_dir / "fund_purchase_effective.csv"
-if effective_path.exists():
-    purchase_effective = len(pd.read_csv(effective_path, dtype=str, encoding="utf-8-sig"))
-    if purchase_original is not None:
-        blacklist_removed = purchase_original - purchase_effective
+    purchase_effective = len(pd.read_csv(fund_etl_dir / "fund_purchase.csv", dtype=str, encoding="utf-8-sig"))
 if filtered_purchase_csv.exists():
     purchase_after = len(pd.read_csv(filtered_purchase_csv, dtype=str, encoding="utf-8-sig"))
 if filter_result_csv.exists():
@@ -462,8 +440,6 @@ summary = pd.DataFrame(
         {"指标": "总步骤数", "值": total_steps},
         {"指标": "成功步骤数", "值": ok_steps},
         {"指标": "步骤成功率(%)", "值": round(success_rate, 2)},
-        {"指标": "原始基金数", "值": purchase_original},
-        {"指标": "黑名单剔除数", "值": blacklist_removed},
         {"指标": "有效基金数", "值": purchase_effective},
         {"指标": "过滤前基金数", "值": purchase_effective},
         {"指标": "过滤后基金数", "值": purchase_after},
@@ -481,7 +457,7 @@ lines = [
     "",
     "## 验收结论",
     f"- 步骤成功率: {ok_steps}/{total_steps} ({success_rate:.2f}%)",
-    f"- 原始/黑名单剔除/有效: {purchase_original} / {blacklist_removed} / {purchase_effective}",
+    f"- 有效基金数: {purchase_effective}",
     f"- 过滤前后数量: {purchase_effective} -> {purchase_after}",
     f"- 被过滤基金数: {filtered_yes}",
     f"- 异常分布: {err_text}",
@@ -559,15 +535,6 @@ else
     --retry-sleep "${ETL_RETRY_SLEEP}"
 fi
 assert_csv_has_rows "${FUND_ETL_DIR}/fund_purchase.csv"
-finish_step "success"
-
-start_step "step1b_build_effective_purchase"
-echo "[full-run] step 1b: build fund_purchase_effective from fund_purchase - blacklist"
-"${PYTHON_BIN}" src/transforms/build_effective_purchase_csv.py \
-  --purchase-csv "${FUND_ETL_DIR}/fund_purchase.csv" \
-  --blacklist-csv "${FUND_BLACKLIST_PATH}" \
-  --output-csv "${FUND_PURCHASE_EFFECTIVE_CSV}"
-assert_csv_has_rows "${FUND_PURCHASE_EFFECTIVE_CSV}"
 finish_step "success"
 
 start_step "step2_fund_etl"

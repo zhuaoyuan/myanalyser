@@ -220,8 +220,11 @@ echo "[isolated-run] run_id: ${RUN_ID}"
 echo "[isolated-run] log: ${LOG_FILE}"
 
 set +e
+# 防止 PATH/VENV_DIR 中的双引号破坏 env 的引号配对
+SAFE_PATH="${PATH//\"/}"
+SAFE_VENV="${VENV_DIR//\"/}"
 if [[ -n "${VENV_DIR}" ]]; then
-  env "RUN_ID=${RUN_ID}" "VIRTUAL_ENV=${VENV_DIR}" "PATH=${VENV_DIR}/bin:${PATH}" "${CMD[@]}" 2>&1 | tee -a "${LOG_FILE}"
+  env "RUN_ID=${RUN_ID}" "VIRTUAL_ENV=${SAFE_VENV}" "PATH=${SAFE_VENV}/bin:${SAFE_PATH}" "${CMD[@]}" 2>&1 | tee -a "${LOG_FILE}"
   PIPELINE_EXIT=${PIPESTATUS[0]}
 else
   env "RUN_ID=${RUN_ID}" "${CMD[@]}" 2>&1 | tee -a "${LOG_FILE}"

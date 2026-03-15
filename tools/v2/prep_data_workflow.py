@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -65,13 +66,14 @@ def _step_a_cyrjg(
     logger: logging.Logger,
 ) -> Path:
     """获取持有人比例全历史 a。若 existing_csv 传入则直接使用。"""
+    out = work_dir / "fund_cyrjg.csv"
     if existing_csv and existing_csv.exists():
         logger.info("[a] 使用已有持有人比例: %s", existing_csv)
-        return existing_csv
+        shutil.copy2(existing_csv, out)
+        return out
 
     n_codes = len(pd.read_csv(purchase_csv, dtype={"基金代码": str})["基金代码"].dropna().unique())
     logger.info("[a] 开始抓取持有人比例，共 %d 只基金", n_codes)
-    out = work_dir / "fund_cyrjg.csv"
     ok = _run_cli(
         "fetch_fund_cyrjg.py",
         ["-i", str(purchase_csv), "-o", str(out), "--delay", str(delay)],
@@ -106,6 +108,7 @@ def _step_b_gmbd(
         to_fetch = sorted(codes)
 
     out = work_dir / "fund_gmbd.csv"
+    tmp_out = work_dir / "_tmp_gmbd_fetched.csv"
     if to_fetch:
         if existing is not None and "基金代码" in existing.columns:
             done_codes = set(existing["基金代码"].dropna().map(_safe_code).tolist())
@@ -117,12 +120,12 @@ def _step_b_gmbd(
         tmp_df.to_csv(tmp_purchase, index=False, encoding="utf-8-sig")
         ok = _run_cli(
             "fetch_fund_gmbd.py",
-            ["-i", str(tmp_purchase), "-o", str(out), "--delay", str(delay)],
+            ["-i", str(tmp_purchase), "-o", str(tmp_out), "--delay", str(delay)],
             logger,
         )
         if not ok:
             raise RuntimeError("基金规模抓取失败")
-        fetched = pd.read_csv(out, dtype=str, encoding="utf-8-sig") if out.exists() else pd.DataFrame()
+        fetched = pd.read_csv(tmp_out, dtype=str, encoding="utf-8-sig") if tmp_out.exists() else pd.DataFrame()
         if existing is not None and not fetched.empty:
             merged = pd.concat([existing, fetched], ignore_index=True)
             if "基金代码" in merged.columns and "日期" in merged.columns:
@@ -130,6 +133,10 @@ def _step_b_gmbd(
             merged.to_csv(out, index=False, encoding="utf-8-sig")
         elif existing is not None:
             existing.to_csv(out, index=False, encoding="utf-8-sig")
+        else:
+            fetched.to_csv(out, index=False, encoding="utf-8-sig")
+        if tmp_out.exists():
+            tmp_out.unlink()
     elif existing is not None:
         existing.to_csv(out, index=False, encoding="utf-8-sig")
     else:
@@ -160,6 +167,7 @@ def _step_c_fee(
         to_fetch = sorted(codes) if codes else []
 
     out = work_dir / "fund_fee_structured.csv"
+    tmp_out = work_dir / "_tmp_fee_fetched.csv"
     if not to_fetch:
         if existing is not None:
             existing.to_csv(out, index=False, encoding="utf-8-sig")
@@ -173,16 +181,22 @@ def _step_c_fee(
     tmp_df.to_csv(tmp_purchase, index=False, encoding="utf-8-sig")
     ok = _run_cli(
         "fetch_fund_fee.py",
-        ["-i", str(tmp_purchase), "-o", str(out), "--delay", str(delay)],
+        ["-i", str(tmp_purchase), "-o", str(tmp_out), "--delay", str(delay)],
         logger,
     )
     if not ok:
         raise RuntimeError("基金费率抓取失败")
 
-    if existing is not None and out.exists():
-        fetched = pd.read_csv(out, dtype=str, encoding="utf-8-sig")
+    fetched = pd.read_csv(tmp_out, dtype=str, encoding="utf-8-sig") if tmp_out.exists() else pd.DataFrame()
+    if existing is not None and not fetched.empty:
         merged = pd.concat([existing, fetched], ignore_index=True)
         merged.to_csv(out, index=False, encoding="utf-8-sig")
+    elif existing is not None:
+        existing.to_csv(out, index=False, encoding="utf-8-sig")
+    else:
+        fetched.to_csv(out, index=False, encoding="utf-8-sig")
+    if tmp_out.exists():
+        tmp_out.unlink()
 
     logger.info("[c] 完成 基金费率 -> %s", out)
     return out
@@ -195,8 +209,6 @@ def _step_e_overview(
     logger: logging.Logger,
 ) -> Path:
     """获取全体基金详情 e。run_step2_overview 本身支持增量。"""
-    import shutil
-
     from fund_etl import RetryConfig, run_step2_overview
 
     out = work_dir / "fund_overview.csv"
@@ -204,6 +216,7 @@ def _step_e_overview(
     retry_cfg = RetryConfig()
     if existing_csv and existing_csv.exists():
         shutil.copy2(existing_csv, out)
+        # run_step2_overview 以 overview_csv 为增量基底
         logger.info("[e] 从已有文件初始化: %s", existing_csv)
     n_codes = len(pd.read_csv(purchase_csv, dtype=str)["基金代码"].dropna().unique())
     logger.info("[e] 开始获取基金详情，共 %d 只基金（run_step2_overview 将按增量打印进度）", n_codes)
@@ -264,14 +277,22 @@ def main() -> int:
 
     work_dir = (args.work_dir or (_MYANALYSER / "tmp" / "prep_work_v2")).resolve()
 
+    def _resolve_existing(path: Path | None, label: str) -> Path | None:
+        if path is None:
+            return None
+        path = path.expanduser()
+        if not path.exists():
+            raise FileNotFoundError(f"{label} not found: {path}")
+        return path.resolve()
+
     try:
         run(
             work_dir=work_dir,
-            purchase_csv=args.purchase_csv.resolve() if args.purchase_csv else None,
-            cyrjg_csv=args.cyrjg_csv.resolve() if args.cyrjg_csv else None,
-            gmbd_csv=args.gmbd_csv.resolve() if args.gmbd_csv else None,
-            fee_csv=args.fee_csv.resolve() if args.fee_csv else None,
-            overview_csv=args.overview_csv.resolve() if args.overview_csv else None,
+            purchase_csv=_resolve_existing(args.purchase_csv, "purchase_csv"),
+            cyrjg_csv=_resolve_existing(args.cyrjg_csv, "cyrjg_csv"),
+            gmbd_csv=_resolve_existing(args.gmbd_csv, "gmbd_csv"),
+            fee_csv=_resolve_existing(args.fee_csv, "fee_csv"),
+            overview_csv=_resolve_existing(args.overview_csv, "overview_csv"),
             delay=args.delay,
             logger=logger,
         )

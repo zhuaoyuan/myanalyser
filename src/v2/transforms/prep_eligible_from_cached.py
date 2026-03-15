@@ -21,6 +21,7 @@ v2 预备数据 eligible 计算（仅使用本地缓存，不联网）。
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import logging
 import re
 import sys
@@ -40,7 +41,21 @@ if str(_PREP_TOOLS) not in sys.path:
 
 
 def _safe_code(v: object) -> str:
-    return str(v).strip().zfill(6)
+    """基金代码归一化：仅接受 6 位数字（或可转换为 6 位数字）。非法返回空字符串。"""
+    if v is None:
+        return ""
+    if isinstance(v, int):
+        return f"{v:06d}"
+    if isinstance(v, float) and v.is_integer():
+        return f"{int(v):06d}"
+    s = str(v).strip()
+    if not s or s == "---":
+        return ""
+    if not s.isdigit():
+        return ""
+    if len(s) > 6:
+        return ""
+    return s.zfill(6)
 
 
 def _parse_date(text: object) -> pd.Timestamp | None:
@@ -75,10 +90,16 @@ def _ensure_fee_filtered(
     if not fee_structured_csv.exists():
         raise FileNotFoundError(f"missing fee structured csv: {fee_structured_csv}")
 
-    import filter_fund_fee_by_holding as fee_filter
-
+    script_path = _PREP_TOOLS / "filter_fund_fee_by_holding.py"
+    if not script_path.exists():
+        raise FileNotFoundError(f"missing fee filter script: {script_path}")
+    spec = importlib.util.spec_from_file_location("fee_filter", script_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("failed to load fee filter module")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
     logger.info("[c.1] 生成费率分类: %s -> %s", fee_structured_csv, fee_filtered_csv)
-    fee_filter.run(fee_structured_csv, fee_filtered_csv)
+    module.run(fee_structured_csv, fee_filtered_csv)
     if not fee_filtered_csv.exists():
         raise RuntimeError("failed to generate fund_fee_filtered.csv")
     return fee_filtered_csv
@@ -93,13 +114,13 @@ def _apply_hard_filters(
     *,
     today: pd.Timestamp,
 ) -> pd.DataFrame:
-    codes = set(purchase_df["基金代码"].dropna().map(_safe_code).tolist())
+    codes = {c for c in purchase_df["基金代码"].dropna().map(_safe_code).tolist() if c}
     logger.info("[eligible] 原始候选 %d 只", len(codes))
 
     # c.1: 必须在 fee 分类结果中存在
     c1_df = pd.read_csv(fee_filtered_csv, dtype=str, encoding="utf-8-sig")
     code_col = "基金编码" if "基金编码" in c1_df.columns else "基金代码"
-    c1_codes = set(c1_df[code_col].dropna().map(_safe_code).tolist())
+    c1_codes = {c for c in c1_df[code_col].dropna().map(_safe_code).tolist() if c}
     codes &= c1_codes
     logger.info("[eligible] c.1 后 %d", len(codes))
 
@@ -109,7 +130,15 @@ def _apply_hard_filters(
     if scale_col not in b_df.columns:
         raise ValueError(f"missing column in gmbd csv: {scale_col}")
     b_df["_scale"] = pd.to_numeric(b_df[scale_col], errors="coerce")
-    include_b = set(b_df[b_df["_scale"] > 2]["基金代码"].dropna().map(_safe_code).tolist())
+    include_b = {
+        c
+        for c in b_df.loc[b_df["_scale"] > 2, "基金代码"]
+        .dropna()
+        .map(_safe_code)
+        .unique()
+        .tolist()
+        if c
+    }
     codes &= include_b
     logger.info("[eligible] b(曾规模>2亿) 后 %d", len(codes))
 
@@ -125,7 +154,7 @@ def _apply_hard_filters(
     inc_ok = inc_ok.sort_values("_inc", na_position="last")
     inc_dedup = inc_ok.drop_duplicates("_code", keep="first").set_index("_code")
     cutoff = today - pd.DateOffset(years=3)
-    include_e = set(inc_dedup.index[inc_dedup["_inc"] < cutoff])
+    include_e = {c for c in inc_dedup.index[inc_dedup["_inc"] < cutoff] if c}
     codes &= include_e
     logger.info("[eligible] e(成立距今>3年) 后 %d", len(codes))
 

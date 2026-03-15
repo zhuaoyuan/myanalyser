@@ -50,15 +50,6 @@ def test_eligible_filters_c1_b_e_and_ignores_a(tmp_path: Path, monkeypatch: pyte
             "成立日期/规模": ["2010-01-01", "2010-01-01", "2010-01-01"],
         }),
     )
-    _write_csv(
-        work_dir / "fund_cyrjg.csv",
-        pd.DataFrame({
-            "基金代码": ["000001", "000001"],
-            "日期": ["2025-01-01", "2025-06-01"],
-            "机构持有比例": ["65%", "70%"],
-        }),
-    )
-
     monkeypatch.setattr(pec, "_get_today", lambda: pd.Timestamp("2026-03-15"))
     output = pec.run(work_dir)
     result = pd.read_csv(output, dtype=str)

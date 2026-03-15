@@ -167,7 +167,7 @@ cd "${PROJECT_ROOT}"
 
 if [[ -z "${VIRTUAL_ENV:-}" ]]; then
   echo "[verify] warning: VIRTUAL_ENV is not active. Please run:"
-  echo "  source /Users/zhuaoyuan/cursor-workspace/finance/myanalyser/.venv312/bin/activate"
+  echo "  source ${PROJECT_ROOT}/.venv312/bin/activate"
 fi
 
 
@@ -182,6 +182,7 @@ fi
 
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)_verify_e2e}"
 DATA_VERSION="${DATA_VERSION:-${RUN_ID}_db}"
+MYSQL_PASSWORD="${MYSQL_PASSWORD:-your_strong_password}"
 VERIFY_ROOT="${PROJECT_ROOT}/data/versions/${RUN_ID}"
 FUND_ETL_DIR="${VERIFY_ROOT}/fund_etl"
 LOGS_DIR="${VERIFY_ROOT}/logs"
@@ -271,7 +272,7 @@ wait_mysql_ready() {
   local max_wait=120
   local waited=0
   while true; do
-    if docker exec fund_mysql mysqladmin ping -h127.0.0.1 -uroot -pyour_strong_password --silent >/dev/null 2>&1; then
+    if docker exec fund_mysql mysqladmin ping -h127.0.0.1 -uroot -p"${MYSQL_PASSWORD}" --silent >/dev/null 2>&1; then
       return 0
     fi
     sleep 2
@@ -607,7 +608,7 @@ STEP10_SCOREBOARD_START_TS="$(date +%s)"
   --mysql-host 127.0.0.1 \
   --mysql-port 3306 \
   --mysql-user root \
-  --mysql-password your_strong_password \
+  --mysql-password "${MYSQL_PASSWORD}" \
   --mysql-db fund_analysis \
   --clickhouse-db fund_analysis \
   --clickhouse-container fund_clickhouse \

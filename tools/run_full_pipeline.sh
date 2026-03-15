@@ -207,7 +207,7 @@ FILTER_START_DATE="${FILTER_START_DATE:-2023-01-01}"
 FILTER_MAX_ABS_DEVIATION="${FILTER_MAX_ABS_DEVIATION:-0.02}"
 FILTER_RESULT_CSV="${ARTIFACTS_DIR}/filtered_fund_candidates.csv"
 FILTERED_PURCHASE_CSV="${FUND_ETL_DIR}/fund_purchase_for_step10_filtered.csv"
-# 黑名单剔除已前置到 prep 阶段，fund_purchase 即为有效清单（与 run_full_pipeline 一致）
+# 黑名单剔除已前置到 prep 阶段，fund_purchase 即为有效清单（与 verify.sh 行为一致）
 # 推荐先运行 prep_data_workflow 产出 fund_purchase；若使用 akshare/LOCAL 直接产出，则黑名单未剔除
 FUND_PURCHASE_EFFECTIVE_CSV="${FUND_ETL_DIR}/fund_purchase.csv"
 INTEGRITY_DETAILS_DIR="${ARTIFACTS_DIR}/trade_day_integrity_reports/details_${INTEGRITY_START_DATE}_${INTEGRITY_END_DATE}"

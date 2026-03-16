@@ -315,6 +315,98 @@ def _read_allowed_codes(filter_csv: Path) -> set[str]:
     return {str(v).strip().zfill(6) for v in allowed_df["基金编码"].dropna().tolist()}
 
 
+# 非数值型列，不参与 agg 汇总
+_NON_METRIC_COLUMNS = frozenset({
+    "as_of_date", "filter_start", "filter_end", "backtest_start", "backtest_end",
+    "allowed_funds", "compare_summary", "integrity_summary", "eligible_csv",
+    "filter_csv", "scoreboard_csv", "summary_csv", "detail_csv", "report_md",
+})
+
+
+def _write_multi_summary_agg(summary_df: pd.DataFrame, output_root: Path) -> None:
+    """基于 summary_df 生成 multi_summary_agg.csv，含跨 T 的汇总统计。
+
+    仅对 multi_summary 中存在的数值型 metrics 列计算 mean/median/std/min/max/p25/p75/count，
+    以及 win_rate（年化收益率>0 比例）、t_count。
+    """
+    if summary_df.empty:
+        logger.info("[multi] agg summary skipped: summary_df empty")
+        return
+
+    metric_cols = [
+        c for c in summary_df.columns
+        if c not in _NON_METRIC_COLUMNS
+    ]
+    if not metric_cols:
+        logger.info("[multi] agg summary skipped: no metric columns")
+        return
+
+    # 转换为数值，空串/非数值 -> NaN
+    numeric_df = summary_df[metric_cols].copy()
+    for c in metric_cols:
+        numeric_df[c] = pd.to_numeric(numeric_df[c], errors="coerce")
+
+    t_count = len(summary_df)
+    agg_rows: list[dict[str, object]] = []
+
+    def _fmt(v: float) -> str | float:
+        if pd.isna(v) or (isinstance(v, float) and v != v):
+            return ""
+        return v
+
+    for stat in ("mean", "median", "std", "min", "max"):
+        row: dict[str, object] = {"stat_type": stat}
+        for c in metric_cols:
+            s = numeric_df[c]
+            if stat == "mean":
+                row[c] = _fmt(s.mean())
+            elif stat == "median":
+                row[c] = _fmt(s.median())
+            elif stat == "std":
+                row[c] = _fmt(s.std()) if s.notna().sum() > 1 else ""
+            elif stat == "min":
+                row[c] = _fmt(s.min())
+            elif stat == "max":
+                row[c] = _fmt(s.max())
+        agg_rows.append(row)
+
+    # p25, p75
+    for q_name, q_val in [("p25", 0.25), ("p75", 0.75)]:
+        row = {"stat_type": q_name}
+        for c in metric_cols:
+            row[c] = _fmt(numeric_df[c].quantile(q_val))
+        agg_rows.append(row)
+
+    # count
+    row = {"stat_type": "count"}
+    for c in metric_cols:
+        row[c] = int(numeric_df[c].notna().sum())
+    agg_rows.append(row)
+
+    # win_rate: 年化收益率 > 0 的比例
+    ann_ret_col = "年化收益率" if "年化收益率" in metric_cols else None
+    row = {"stat_type": "win_rate"}
+    for c in metric_cols:
+        if c == ann_ret_col:
+            s = numeric_df[c].dropna()
+            n = len(s)
+            row[c] = round((s > 0).sum() / n, 6) if n > 0 else ""
+        else:
+            row[c] = ""
+    agg_rows.append(row)
+
+    # t_count 元信息
+    row = {"stat_type": "t_count"}
+    for c in metric_cols:
+        row[c] = "" if c != metric_cols[0] else t_count
+    agg_rows.append(row)
+
+    agg_df = pd.DataFrame(agg_rows, columns=["stat_type"] + metric_cols)
+    agg_path = output_root / "multi_summary_agg.csv"
+    agg_df.to_csv(agg_path, index=False, encoding="utf-8-sig")
+    logger.info("[multi] agg summary -> %s", agg_path)
+
+
 def _extract_metrics(summary_csv: Path) -> dict[str, str]:
     if not summary_csv.exists():
         return {}
@@ -695,6 +787,8 @@ def main() -> None:
     summary_csv = output_root / "multi_summary.csv"
     summary_df.to_csv(summary_csv, index=False, encoding="utf-8-sig")
     logger.info("[multi] summary -> %s", summary_csv)
+
+    _write_multi_summary_agg(summary_df, output_root)
 
 
 if __name__ == "__main__":

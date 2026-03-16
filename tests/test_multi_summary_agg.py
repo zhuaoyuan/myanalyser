@@ -49,11 +49,10 @@ class TestWriteMultiSummaryAgg:
                 describe_key = _stat_map.get(stat, stat)
                 for col in ["年化收益率", "最大回撤率", "夏普比率"]:
                     actual = agg_row[col].iloc[0]
+                    expected = numeric_df[col].describe().get(describe_key, float("nan"))
                     if actual == "" or pd.isna(actual) or (isinstance(actual, str) and not actual):
-                        expected = numeric_df[col].describe().get(describe_key)
                         assert pd.isna(expected) or numeric_df[col].isna().all()
                     else:
-                        expected = numeric_df[col].describe()[describe_key]
                         assert abs(float(actual) - float(expected)) < 1e-6, (
                             f"{stat} {col}: {actual} vs {expected}"
                         )

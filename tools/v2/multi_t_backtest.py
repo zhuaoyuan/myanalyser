@@ -81,6 +81,7 @@ from check_trade_day_data_integrity import (
 try:
     from fund_metrics_core import HOLDING_METRIC_NAMES
 except ImportError:
+    logging.warning("fund_metrics_core 未安装，multi_summary_agg 将跳过")
     HOLDING_METRIC_NAMES = ()
 
 

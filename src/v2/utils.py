@@ -14,6 +14,8 @@ def safe_fund_code(value: object) -> str:
     """
     if value is None:
         return ""
+    if isinstance(value, bool):
+        return ""
     if isinstance(value, int):
         if 0 <= value <= 999999:
             return f"{value:06d}"

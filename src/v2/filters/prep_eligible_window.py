@@ -177,7 +177,7 @@ def run(
         if inc is None:
             continue
         cutoff = inc + two_years
-        sub = grp[(grp[date_col] >= cutoff) & (grp[date_col] <= end_ts)]
+        sub = grp[grp[date_col] >= cutoff]  # grp 已限制 date<=end_ts，无需重复判断
         if _has_consecutive_over_60(sub, date_col):
             exclude_a.add(code)
     codes -= exclude_a
@@ -186,14 +186,15 @@ def run(
     # b: 仅保留 end_date 前最新一条规模 > 2 亿的基金
     b_df = pd.read_csv(gmbd_csv, dtype=str, encoding="utf-8-sig")
     b_df["日期"] = pd.to_datetime(b_df["日期"], errors="coerce")
-    b_df = b_df[b_df["日期"] <= end_ts]
+    b_df = b_df[b_df["日期"].notna() & (b_df["日期"] <= end_ts)]
     scale_col = "期末净资产（亿元）"
     if scale_col in b_df.columns:
         b_df["_scale"] = pd.to_numeric(b_df[scale_col], errors="coerce")
         b_df["_code"] = b_df["基金代码"].map(_safe_code)
         b_df = b_df[b_df["_code"] != ""].dropna(subset=["_scale"])
-        latest = b_df.loc[b_df.groupby("_code")["日期"].idxmax()]
-        include_b = set(latest[latest["_scale"] > 2]["_code"].tolist())
+        # 同日期多行时 groupby.last 取最后一条，避免 idxmax 仅取首条
+        latest = b_df.sort_values("日期").groupby("_code", as_index=False).last()
+        include_b = set(latest[latest["_scale"] > 2]["_code"].astype(str).str.strip().str.zfill(6).tolist())
         codes &= include_b
         log.info("[eligible] b(end_date前最新规模>2亿) 后 %d", len(codes))
     else:

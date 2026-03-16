@@ -34,8 +34,12 @@ _MYANALYSER_ROOT = _SCRIPT_DIR.parent.parent
 _SRC = _MYANALYSER_ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
 
 from project_paths import project_root
+
+from backtest_helpers import compute_end_extended_str
 
 from backtest import load_fund_nav_data, run_backtest
 from backtest.engine import BacktestConfig, write_reports
@@ -221,13 +225,7 @@ def run_verify(
         start_str = start_date.strftime("%Y-%m-%d")
         end_str = as_of_str
         cache_key = f"{start_str}_{end_str}"
-
-        t_index = bisect_left(trading_days, as_of_date)
-        end_index = t_index + hold_days
-        if end_index >= len(trading_days):
-            raise ValueError(f"hold-days exceeds calendar for T={as_of_str}")
-        end_extended = trading_days[end_index]
-        end_extended_str = end_extended.strftime("%Y-%m-%d")
+        end_extended_str = compute_end_extended_str(as_of_date, hold_days, trading_days)
         cache_key_filter = f"{start_str}_{end_extended_str}"
 
         compare_dir = cache_root / "compare" / ruleset_version / cache_key_filter

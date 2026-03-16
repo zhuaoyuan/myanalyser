@@ -46,6 +46,8 @@ _MYANALYSER_ROOT = _SCRIPT_DIR.parent.parent  # tools/v2 -> tools -> myanalyser
 _SRC = _MYANALYSER_ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
 
 from project_paths import project_root
 
@@ -57,6 +59,7 @@ from transforms.build_filtered_purchase_csv import build_filtered_purchase_csv
 from v2.compare.compare_adjusted_nav_and_cum_return_window import (
     compare_adjusted_nav_and_cum_return_window,
 )
+from backtest_helpers import compute_end_extended_str
 from v2.filters.filter_funds_for_next_step import filter_funds_for_next_step
 from v2.filters.prep_eligible_window import run as run_prep_eligible_window
 from check_trade_day_data_integrity import (
@@ -366,11 +369,7 @@ def main() -> None:
         start_str = start_date.strftime("%Y-%m-%d")
         end_str = as_of_str
 
-        t_index = bisect_left(trading_days, as_of_date)
-        end_index = t_index + args.hold_days
-        if end_index >= len(trading_days):
-            raise ValueError(f"hold-days exceeds trading calendar end for T={as_of_str}")
-        end_extended_str = trading_days[end_index].strftime("%Y-%m-%d")
+        end_extended_str = compute_end_extended_str(as_of_date, args.hold_days, trading_days)
 
         cache_key = f"{start_str}_{end_str}"
         cache_key_filter = f"{start_str}_{end_extended_str}"

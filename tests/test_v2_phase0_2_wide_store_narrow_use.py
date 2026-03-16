@@ -475,7 +475,7 @@ class TestPrepEligibleWindow:
         from v2.filters.prep_eligible_window import run
         out = run(work_dir=work, start_date="2024-01-01", end_date="2024-12-31", output_path=tmp_path / "eligible.csv")
         result = pd.read_csv(out, dtype=str)
-        assert result.empty or len(result) == 0
+        assert result.empty
 
     def test_custom_output_path(self, tmp_path: Path) -> None:
         """正常：指定 output_path 写入到非 work_dir"""
@@ -520,4 +520,4 @@ class TestPrepEligibleWindow:
         from v2.filters.prep_eligible_window import run
         out = run(work_dir=work, start_date="2024-01-01", end_date="2024-12-31", output_path=tmp_path / "eligible.csv")
         result = pd.read_csv(out, dtype=str)
-        assert result.empty or len(result) == 0
+        assert result.empty

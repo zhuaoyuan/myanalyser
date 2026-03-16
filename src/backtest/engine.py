@@ -66,8 +66,14 @@ def _slice_data_upto(data: BacktestData, as_of_ts: pd.Timestamp) -> BacktestData
     as_of_ts = pd.Timestamp(as_of_ts).normalize()
 
     long_df = data.long_df
-    if "date" in long_df.columns:
-        long_df = long_df[long_df["date"] <= as_of_ts]
+    if "date" not in long_df.columns:
+        warnings.warn(
+            "BacktestData.long_df missing 'date' column; skip slicing and return empty long_df.",
+            UserWarning,
+        )
+        long_df = pd.DataFrame(columns=long_df.columns)
+    else:
+        long_df = long_df[long_df["date"] <= as_of_ts].copy()
 
     by_symbol: dict[str, pd.DataFrame] = {}
     for symbol, df_symbol in data.by_symbol.items():
@@ -75,7 +81,7 @@ def _slice_data_upto(data: BacktestData, as_of_ts: pd.Timestamp) -> BacktestData
             continue
         if "date" not in df_symbol.columns:
             continue
-        df_hist = df_symbol.loc[df_symbol["date"] <= as_of_ts]
+        df_hist = df_symbol.loc[df_symbol["date"] <= as_of_ts].copy()
         if df_hist.empty:
             continue
         by_symbol[symbol] = df_hist
@@ -84,9 +90,9 @@ def _slice_data_upto(data: BacktestData, as_of_ts: pd.Timestamp) -> BacktestData
         trading_dates: list[pd.Timestamp] = []
     else:
         trading_dates = sorted(
-            pd.Series(long_df["date"].unique())
+            pd.to_datetime(long_df["date"].unique(), errors="coerce")
             .dropna()
-            .map(lambda d: pd.Timestamp(d).normalize())
+            .normalize()
             .tolist()
         )
 

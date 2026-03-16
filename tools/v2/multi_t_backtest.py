@@ -33,6 +33,7 @@ from __future__ import annotations
 
 
 import argparse
+import hashlib
 import logging
 import os
 import sys
@@ -234,6 +235,26 @@ def _ensure_integrity_cache(
     )
 
 
+def _parse_fund_types(raw: str | None) -> list[str]:
+    """解析逗号分隔的基金类型列表，空或 None 返回 []。"""
+    if not raw or not str(raw).strip():
+        return []
+    return [x.strip() for x in str(raw).split(",") if x.strip()]
+
+
+def _load_type_filtered_codes(prep_work_dir: Path, fund_types: list[str]) -> set[str]:
+    """从 prep-work-dir/fund_fee_filtered.csv 筛选指定类型的基金编码。"""
+    fee_csv = prep_work_dir / "fund_fee_filtered.csv"
+    if not fee_csv.exists():
+        raise FileNotFoundError(f"基金类型筛选需要 {fee_csv}，请先运行 prep 生成")
+    df = pd.read_csv(fee_csv, dtype={"基金编码": str, "类型": str}, encoding="utf-8-sig")
+    if "类型" not in df.columns or "基金编码" not in df.columns:
+        raise ValueError(f"{fee_csv} 缺少 类型 或 基金编码 列")
+    types_set = {t.strip() for t in fund_types}
+    filtered = df[df["类型"].astype(str).str.strip().isin(types_set)]
+    return {str(c).strip().zfill(6) for c in filtered["基金编码"].dropna().tolist() if c}
+
+
 def _read_allowed_codes(filter_csv: Path) -> set[str]:
     df = pd.read_csv(filter_csv, dtype={"基金编码": str}, encoding="utf-8-sig")
     if df.empty or "基金编码" not in df.columns:
@@ -332,10 +353,17 @@ def main() -> None:
     parser.add_argument("--top-n", type=int, default=3)
     parser.add_argument("--warmup", type=int, default=243)
     parser.add_argument("--initial-cash", type=float, default=100_000)
+    parser.add_argument(
+        "--fund-types",
+        default=None,
+        help="逗号分隔的基金类型，用于从 prep-work-dir/fund_fee_filtered.csv 筛选基金。"
+        "可选值见该文件的 类型 列，如 A类730天,C类30天,A类30天",
+    )
     args = parser.parse_args()
 
     run_id = args.run_id
     ruleset_version = args.ruleset_version
+    fund_types = _parse_fund_types(args.fund_types)
 
     workspace_root = project_root()
     data_root = workspace_root / "data" / "versions" / run_id
@@ -376,10 +404,13 @@ def main() -> None:
 
         cache_key = f"{start_str}_{end_str}"
         cache_key_filter = f"{start_str}_{end_extended_str}"
+        fund_types_suffix = ""
+        if fund_types:
+            fund_types_suffix = "_" + hashlib.md5(",".join(sorted(fund_types)).encode()).hexdigest()[:8]
         compare_dir = _cache_dir(cache_root, "compare", ruleset_version, cache_key_filter)
         integrity_dir = _cache_dir(cache_root, "integrity", ruleset_version, cache_key_filter)
         eligible_dir = _cache_dir(cache_root, "prep_eligible", ruleset_version, cache_key)
-        filter_dir = _cache_dir(cache_root, "filter", ruleset_version, cache_key_filter)
+        filter_dir = _cache_dir(cache_root, "filter", ruleset_version, cache_key_filter + fund_types_suffix)
         scoreboard_dir = _cache_dir(cache_root, "scoreboard", ruleset_version, as_of_str, cache_key)
 
         logger.info("[T=%s] start window %s -> %s, filter/compare/integrity 延伸至 %s", as_of_str, start_str, end_str, end_extended_str)
@@ -443,6 +474,35 @@ def main() -> None:
                 logger=logger,
             )
 
+        # 基金类型筛选：从 prep-work-dir/fund_fee_filtered.csv 按类型过滤，与 eligible 取交集
+        if fund_types:
+            type_allowed_codes = _load_type_filtered_codes(prep_work_dir, fund_types)
+            if not type_allowed_codes:
+                raise ValueError(
+                    f"--fund-types {fund_types} 在 fund_fee_filtered.csv 中无匹配基金，请检查类型拼写"
+                )
+            eligible_df = pd.read_csv(eligible_csv, dtype=str, encoding="utf-8-sig")
+            code_col = "基金编码" if "基金编码" in eligible_df.columns else "基金代码"
+            eligible_df["_code"] = eligible_df[code_col].astype(str).str.strip().str.zfill(6)
+            filtered_df = eligible_df[eligible_df["_code"].isin(type_allowed_codes)].drop(
+                columns=["_code"]
+            )
+            if filtered_df.empty:
+                raise ValueError(
+                    f"eligible 与 fund-types {fund_types} 取交后为空，请检查 prep 与类型配置"
+                )
+            filter_dir.mkdir(parents=True, exist_ok=True)
+            purchase_csv_for_filter = filter_dir / "eligible_by_type.csv"
+            filtered_df.to_csv(purchase_csv_for_filter, index=False, encoding="utf-8-sig")
+            logger.info(
+                "[fund-types] %s -> %d 基金（原 %d）",
+                ",".join(fund_types),
+                len(filtered_df),
+                len(eligible_df),
+            )
+        else:
+            purchase_csv_for_filter = eligible_csv
+
         filter_csv = filter_dir / "filtered_fund_candidates.csv"
         # filter 缓存：filter_dir 含 ruleset_version，规则变更时 bump ruleset_version 即可使缓存失效（方案 C）
         if filter_csv.exists():
@@ -450,7 +510,7 @@ def main() -> None:
         else:
             filter_dir.mkdir(parents=True, exist_ok=True)
             filter_df = filter_funds_for_next_step(
-                purchase_csv=eligible_csv,
+                purchase_csv=purchase_csv_for_filter,
                 overview_csv=fund_etl_dir / "fund_overview.csv",
                 nav_dir=fund_etl_dir / "fund_nav_by_code",
                 adjusted_nav_dir=fund_etl_dir / "fund_adjusted_nav_by_code",
@@ -469,7 +529,7 @@ def main() -> None:
         purchase_filtered_csv = filter_dir / "fund_purchase_for_step10_filtered.csv"
         if not purchase_filtered_csv.exists():
             build_filtered_purchase_csv(
-                purchase_csv=eligible_csv,
+                purchase_csv=purchase_csv_for_filter,
                 filter_csv=filter_csv,
                 output_csv=purchase_filtered_csv,
             )

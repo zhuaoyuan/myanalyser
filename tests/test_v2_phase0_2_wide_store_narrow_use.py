@@ -485,3 +485,39 @@ class TestPrepEligibleWindow:
         out = run(work_dir=work, start_date="2024-01-01", end_date="2024-12-31", output_path=custom)
         assert out == custom.resolve()
         assert custom.exists()
+
+    def test_rule_b_latest_scale_before_end_date(self, tmp_path: Path) -> None:
+        """规则b：仅用 end_date 前最新一条规模判定；窗口内曾>2亿但最新<=2亿应排除"""
+        work = tmp_path / "work"
+        work.mkdir(parents=True)
+        codes = ["000001"]
+        _write_csv(work / "fund_purchase.csv", pd.DataFrame({"基金代码": codes}))
+        _write_csv(
+            work / "fund_fee_filtered.csv",
+            pd.DataFrame({"基金编码": codes, "类型": ["A类30天"], "申购费率": ["0.1%"], "赎回费率": ["0%"]}),
+        )
+        _write_csv(
+            work / "fund_cyrjg.csv",
+            pd.DataFrame({"基金代码": codes, "日期": ["2024-01-01"], "机构持有比例": ["30%"]}),
+        )
+        # 2024-06-01 规模 3 亿，2024-12-15 规模 1 亿；end_date=2024-12-31 前最新为 1 亿，应排除
+        _write_csv(
+            work / "fund_gmbd.csv",
+            pd.DataFrame({
+                "基金代码": codes * 2,
+                "日期": ["2024-06-01", "2024-12-15"],
+                "期末净资产（亿元）": ["3", "1"],
+            }),
+        )
+        _write_csv(
+            work / "fund_overview.csv",
+            pd.DataFrame({"基金代码": codes, "成立日期/规模": ["2010-01-01"]}),
+        )
+        _write_csv(
+            work / "fund_fee_structured.csv",
+            pd.DataFrame({"基金编码": codes, "申购状态": ["开放申购"], "赎回状态": ["开放赎回"]}),
+        )
+        from v2.filters.prep_eligible_window import run
+        out = run(work_dir=work, start_date="2024-01-01", end_date="2024-12-31", output_path=tmp_path / "eligible.csv")
+        result = pd.read_csv(out, dtype=str)
+        assert result.empty or len(result) == 0

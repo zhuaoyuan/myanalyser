@@ -160,12 +160,12 @@ def run(
     else:
         include_e = None
 
-    # a: 排除窗口内、且基金成立大于2年后、机构持仓比例连续两次超过60%的基金
+    # a: 排除在 [成立+2年, 窗口 end_date] 内机构持仓连续两次 > 60% 的基金（不做 start_ts 裁剪）
     a_df = pd.read_csv(cyrjg_csv, dtype=str, encoding="utf-8-sig")
     date_col = "日期" if "日期" in a_df.columns else "公告日期"
     a_df = a_df.copy()
     a_df[date_col] = pd.to_datetime(a_df[date_col], errors="coerce")
-    a_df = a_df[(a_df[date_col] >= start_ts) & (a_df[date_col] <= end_ts)]
+    a_df = a_df[a_df[date_col] <= end_ts]
     a_df["_pct"] = a_df["机构持有比例"].map(_parse_pct)
     a_df["_code"] = a_df["基金代码"].map(_safe_code)
     a_df = a_df[a_df["_code"] != ""]
@@ -177,22 +177,25 @@ def run(
         if inc is None:
             continue
         cutoff = inc + two_years
-        sub = grp[grp[date_col] >= cutoff]
+        sub = grp[(grp[date_col] >= cutoff) & (grp[date_col] <= end_ts)]
         if _has_consecutive_over_60(sub, date_col):
             exclude_a.add(code)
     codes -= exclude_a
-    log.info("[eligible] a(窗口内+成立>2年后+连续两次>60%%排除) 后 %d，排除 %d", len(codes), len(exclude_a))
+    log.info("[eligible] a([成立+2年,end_date]内连续两次>60%%排除) 后 %d，排除 %d", len(codes), len(exclude_a))
 
-    # b: 仅保留窗口内发生过规模 > 2亿 的基金
+    # b: 仅保留 end_date 前最新一条规模 > 2 亿的基金
     b_df = pd.read_csv(gmbd_csv, dtype=str, encoding="utf-8-sig")
     b_df["日期"] = pd.to_datetime(b_df["日期"], errors="coerce")
-    b_df = b_df[(b_df["日期"] >= start_ts) & (b_df["日期"] <= end_ts)]
+    b_df = b_df[b_df["日期"] <= end_ts]
     scale_col = "期末净资产（亿元）"
     if scale_col in b_df.columns:
         b_df["_scale"] = pd.to_numeric(b_df[scale_col], errors="coerce")
-        include_b = set(b_df[b_df["_scale"] > 2]["基金代码"].dropna().map(_safe_code).tolist())
+        b_df["_code"] = b_df["基金代码"].map(_safe_code)
+        b_df = b_df[b_df["_code"] != ""].dropna(subset=["_scale"])
+        latest = b_df.loc[b_df.groupby("_code")["日期"].idxmax()]
+        include_b = set(latest[latest["_scale"] > 2]["_code"].tolist())
         codes &= include_b
-        log.info("[eligible] b(窗口内规模>2亿) 后 %d", len(codes))
+        log.info("[eligible] b(end_date前最新规模>2亿) 后 %d", len(codes))
     else:
         raise ValueError(f"missing column in gmbd csv: {scale_col}")
 

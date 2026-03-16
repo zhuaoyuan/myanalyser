@@ -222,38 +222,46 @@ def run_verify(
         end_str = as_of_str
         cache_key = f"{start_str}_{end_str}"
 
-        compare_dir = cache_root / "compare" / ruleset_version / cache_key
-        integrity_dir = cache_root / "integrity" / ruleset_version / cache_key
+        t_index = bisect_left(trading_days, as_of_date)
+        end_index = t_index + hold_days
+        if end_index >= len(trading_days):
+            raise ValueError(f"hold-days exceeds calendar for T={as_of_str}")
+        end_extended = trading_days[end_index]
+        end_extended_str = end_extended.strftime("%Y-%m-%d")
+        cache_key_filter = f"{start_str}_{end_extended_str}"
+
+        compare_dir = cache_root / "compare" / ruleset_version / cache_key_filter
+        integrity_dir = cache_root / "integrity" / ruleset_version / cache_key_filter
         eligible_dir = cache_root / "prep_eligible" / ruleset_version / cache_key
-        filter_dir = cache_root / "filter" / ruleset_version / cache_key
+        filter_dir = cache_root / "filter" / ruleset_version / cache_key_filter
 
-        logger.info("[verify] T=%s window %s -> %s", as_of_str, start_str, end_str)
+        logger.info("[verify] T=%s window %s -> %s (filter/compare/integrity 延伸至 %s)", as_of_str, start_str, end_str, end_extended_str)
 
-        # ---- 前置：compare & integrity ----
+        # ---- 前置：compare & integrity（区间延伸 hold_days，覆盖完整持仓周期）----
         if not (compare_dir / "summary.csv").exists() or not (compare_dir / "details").is_dir():
             compare_dir.mkdir(parents=True, exist_ok=True)
             compare_adjusted_nav_and_cum_return_window(
                 base_dir=fund_etl_dir,
                 start_date=start_str,
-                end_date=end_str,
+                end_date=end_extended_str,
                 output_dir=compare_dir,
                 error_log_path=compare_dir / "errors.jsonl",
             )
         compare_details = compare_dir / "details"
 
-        integrity_details_path = integrity_dir / f"details_{start_str}_{end_str}"
+        integrity_details_path = integrity_dir / f"details_{start_str}_{end_extended_str}"
         if not integrity_details_path.exists():
             integrity_dir.mkdir(parents=True, exist_ok=True)
-            trade_days_str = load_trade_days(trading_calendar_csv, start_str, end_str)
+            trade_days_str = load_trade_days(trading_calendar_csv, start_str, end_extended_str)
             eligible_integrity = load_eligible_fund_codes(fund_etl_dir / "fund_overview.csv", start_str)
-            details_path = integrity_dir / f"details_{start_str}_{end_str}"
+            details_path = integrity_dir / f"details_{start_str}_{end_extended_str}"
             details_path.mkdir(parents=True, exist_ok=True)
             nav_dir = fund_etl_dir / "fund_adjusted_nav_by_code"
             for fp in nav_dir.glob("*.csv"):
                 if fp.stem in eligible_integrity:
                     _, _, detail_df = compute_integrity_for_fund(fp, trade_days_str)
-                    detail_df.to_csv(details_path / f"{fp.stem}_{start_str}_{end_str}.csv", index=False)
-        integrity_details = integrity_dir / f"details_{start_str}_{end_str}"
+                    detail_df.to_csv(details_path / f"{fp.stem}_{start_str}_{end_extended_str}.csv", index=False)
+        integrity_details = integrity_dir / f"details_{start_str}_{end_extended_str}"
 
         # ---- Step 1: prep_eligible ----
         eligible_csv = eligible_dir / "eligible_fund_candidates.csv"
@@ -275,8 +283,8 @@ def run_verify(
         step1_conditions = {
             "时间窗口": f"[{start_str}, {end_str}]",
             "c.1": "必须在 fund_fee_filtered.csv 中存在",
-            "a": "排除: 窗口内+成立>2年后+机构持仓连续两次>60%",
-            "b": "仅保留: 窗口内规模>2亿",
+            "a": "排除: [成立+2年, end_date] 内机构持仓连续两次>60%",
+            "b": "仅保留: end_date 前最新规模>2亿",
             "e": "仅保留: start_date 前成立",
             "依赖文件": [
                 str(prep_work_dir / "fund_purchase.csv"),
@@ -314,7 +322,7 @@ def run_verify(
                 compare_details_dir=compare_details,
                 integrity_details_dir=integrity_details,
                 start_date=start_str,
-                end_date=end_str,
+                end_date=end_extended_str,
                 max_abs_deviation=0.02,
             )
             filter_df.to_csv(filter_csv, index=False, encoding="utf-8-sig")
@@ -326,7 +334,7 @@ def run_verify(
         after_step2 = len(allowed_codes)
 
         step2_conditions = {
-            "时间窗口": f"[{start_str}, {end_str}]",
+            "时间窗口": f"[{start_str}, {end_extended_str}] (延伸 hold_days 覆盖完整持仓周期)",
             "规则1": "fund_overview.csv 中存在",
             "规则2": "fund_nav_by_code 中存在",
             "规则3": "fund_adjusted_nav_by_code 中存在",
@@ -353,7 +361,7 @@ def run_verify(
             compare_details,
             integrity_details,
             start_str,
-            end_str,
+            end_extended_str,
             0.02,
         )
 

@@ -366,20 +366,27 @@ def main() -> None:
         start_str = start_date.strftime("%Y-%m-%d")
         end_str = as_of_str
 
+        t_index = bisect_left(trading_days, as_of_date)
+        end_index = t_index + args.hold_days
+        if end_index >= len(trading_days):
+            raise ValueError(f"hold-days exceeds trading calendar end for T={as_of_str}")
+        end_extended_str = trading_days[end_index].strftime("%Y-%m-%d")
+
         cache_key = f"{start_str}_{end_str}"
-        compare_dir = _cache_dir(cache_root, "compare", ruleset_version, cache_key)
-        integrity_dir = _cache_dir(cache_root, "integrity", ruleset_version, cache_key)
+        cache_key_filter = f"{start_str}_{end_extended_str}"
+        compare_dir = _cache_dir(cache_root, "compare", ruleset_version, cache_key_filter)
+        integrity_dir = _cache_dir(cache_root, "integrity", ruleset_version, cache_key_filter)
         eligible_dir = _cache_dir(cache_root, "prep_eligible", ruleset_version, cache_key)
-        filter_dir = _cache_dir(cache_root, "filter", ruleset_version, cache_key)
+        filter_dir = _cache_dir(cache_root, "filter", ruleset_version, cache_key_filter)
         scoreboard_dir = _cache_dir(cache_root, "scoreboard", ruleset_version, as_of_str, cache_key)
 
-        logger.info("[T=%s] start window %s -> %s", as_of_str, start_str, end_str)
+        logger.info("[T=%s] start window %s -> %s, filter/compare/integrity 延伸至 %s", as_of_str, start_str, end_str, end_extended_str)
 
         compare_summary, compare_details = _ensure_compare_cache(
             base_dir=fund_etl_dir,
             cache_dir=compare_dir,
             start_date=start_str,
-            end_date=end_str,
+            end_date=end_extended_str,
         )
 
         integrity_summary, integrity_details = _ensure_integrity_cache(
@@ -387,7 +394,7 @@ def main() -> None:
             cache_dir=integrity_dir,
             trade_dates_csv=trading_calendar_csv,
             start_date=start_str,
-            end_date=end_str,
+            end_date=end_extended_str,
         )
 
         eligible_csv = eligible_dir / "eligible_fund_candidates.csv"
@@ -416,7 +423,7 @@ def main() -> None:
                 compare_details_dir=compare_details,
                 integrity_details_dir=integrity_details,
                 start_date=start_str,
-                end_date=end_str,
+                end_date=end_extended_str,
             )
             filter_df.to_csv(filter_csv, index=False, encoding="utf-8-sig")
             logger.info("[filter] write %s", filter_csv)

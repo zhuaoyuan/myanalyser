@@ -4,9 +4,10 @@
   1. 规则1: 基金必须在 fund_overview.csv 中
   2. 规则2: 必须在 fund_nav_by_code 中存在 NAV 原始净值
   3. 规则3: 必须在 fund_adjusted_nav_by_code 中存在复权净值
-  4. 规则4: Compare 明细在 [start_date, end_date] 内
+  4. 规则4: Compare 明细在 [start_date, end_date] 内（end_date 建议延伸 hold_days 覆盖完整持仓周期）
      本地远程收益率偏差绝对值须 < max_abs_deviation
   5. 规则5: Integrity 明细在 [start_date, end_date] 内各交易日数据须完整
+     （end_date 建议延伸 hold_days 覆盖完整持仓周期）
 """
 from __future__ import annotations
 

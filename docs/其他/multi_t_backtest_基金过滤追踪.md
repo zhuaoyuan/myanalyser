@@ -51,16 +51,16 @@ python myanalyser/tools/v2/multi_t_backtest.py \
 |-----|----------|--------|--------|
 | 原始 | - | `len(fund_purchase 去重基金代码)` | - |
 | c.1 | 必须在 `fund_fee_filtered.csv` 中存在 | 原始数量 | `codes &= c1_codes` |
-| a | 排除：窗口内、成立>2年后、机构持仓比例**连续两次**>60% 的基金 | c.1 后 | `codes -= exclude_a` |
-| b | 仅保留：窗口内发生过规模 > 2 亿 的基金 | a 后 | `codes &= include_b` |
+| a | 排除：在 `[成立+2年, 窗口 end_date]` 内机构持仓比例**连续两次**>60% 的基金（不做 start_ts 裁剪） | c.1 后 | `codes -= exclude_a` |
+| b | 仅保留：`end_date` 前**最新一条**规模 > 2 亿的基金（非窗口内任一条） | a 后 | `codes &= include_b` |
 | e | 仅保留：`start_date` 之前成立的基金（有成立日期且成立日 < start_date） | b 后 | `codes &= include_e` |
 
 **日志示例**:
 ```
 [eligible] 原始候选 XXXX 只
 [eligible] c.1 后 XXXX
-[eligible] a(窗口内+成立>2年后+连续两次>60%排除) 后 XXXX，排除 XX
-[eligible] b(窗口内规模>2亿) 后 XXXX
+[eligible] a([成立+2年,end_date]内连续两次>60%排除) 后 XXXX，排除 XX
+[eligible] b(end_date前最新规模>2亿) 后 XXXX
 [eligible] e(start_date前成立) 后 XXXX
 [eligible] 最终结果 XXXX 只
 ```
@@ -84,8 +84,8 @@ python myanalyser/tools/v2/multi_t_backtest.py \
 | 规则 1 | 基金必须在 `fund_overview.csv`（fund_etl 目录）中 |
 | 规则 2 | 必须在 `fund_nav_by_code` 目录中存在 NAV 原始净值 |
 | 规则 3 | 必须在 `fund_adjusted_nav_by_code` 目录中存在复权净值 |
-| 规则 4 | Compare 明细在 `[start_date, end_date]` 内，本地/远程收益率偏差绝对值 < `max_abs_deviation`（默认 0.02） |
-| 规则 5 | Integrity 明细在 `[start_date, end_date]` 内，各交易日数据完整（该日期数据是否存在 = "是"） |
+| 规则 4 | Compare 明细在 `[start_date, end_date + hold_days]` 内（按交易日历延伸），本地/远程收益率偏差绝对值 < `max_abs_deviation`（默认 0.02） |
+| 规则 5 | Integrity 明细在 `[start_date, end_date + hold_days]` 内（按交易日历延伸），各交易日数据完整（该日期数据是否存在 = "是"） |
 
 **数量说明**:
 - 过滤前：eligible 中基金数

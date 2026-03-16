@@ -4,6 +4,9 @@
 - eligible_base_{start}_{end}.csv：c.1+a+b+e 结果，不依赖 personnel_dir
 - personnel_excluded_{start}_{end}.csv：规则 f 排除的基金编码
 - eligible_fund_candidates.csv：base - personnel_excluded，加载时合并
+
+缓存策略：base/personnel 缓存不校验输入文件（fund_purchase、fund_fee_filtered 等）是否变更；
+若输入更新需使缓存失效，请手动删除对应 cache 目录。
 """
 from __future__ import annotations
 
@@ -117,7 +120,7 @@ def _compute_personnel_excluded(
     max_workers: int = _MAX_PERSONNEL_WORKERS,
 ) -> set[str]:
     """仅对 personnel_dir 中存在的 {code}.csv 做并发读取，返回窗口内有人事变动的基金编码集合。"""
-    existent = [(c, personnel_dir / f"{c}.csv") for c in codes if (personnel_dir / f"{c}.csv").exists()]
+    existent = [(c, p) for c in codes if (p := personnel_dir / f"{c}.csv").exists()]
     if not existent:
         return set()
     exclude_f: set[str] = set()
@@ -131,9 +134,41 @@ def _compute_personnel_excluded(
             try:
                 if future.result():
                     exclude_f.add(code)
-            except Exception:  # noqa: BLE001
-                pass
+            except (OSError, pd.errors.ParserError, UnicodeDecodeError, ValueError) as e:
+                logging.getLogger(__name__).debug("[eligible] f 并发任务 %s 异常: %s", code, e)
     return exclude_f
+
+
+def compute_personnel_excluded_and_merge(
+    base_path: Path,
+    personnel_dir: Path,
+    personnel_excluded_path: Path,
+    output_path: Path,
+    start_date: str,
+    end_date: str,
+    *,
+    logger: logging.Logger | None = None,
+) -> Path:
+    """当 base 缓存存在、personnel 缓存不存在时，仅计算 personnel 并合并，避免重复跑 c.1+a+b+e。"""
+    log = logger or logging.getLogger(__name__)
+    base_df = pd.read_csv(base_path, dtype=str, encoding="utf-8-sig")
+    base_codes = set(base_df["基金代码"].map(_safe_code)) - {""}
+    end_ts = pd.to_datetime(end_date)
+    one_year = pd.DateOffset(years=1)
+    personnel_start = end_ts - one_year
+    personnel_excluded = _compute_personnel_excluded(
+        base_codes, personnel_dir, personnel_start, end_ts
+    )
+    pd.DataFrame({"基金编码": sorted(personnel_excluded)}).to_csv(
+        personnel_excluded_path, index=False, encoding="utf-8-sig"
+    )
+    log.info("[eligible] f 计算 personnel_excluded 并缓存: %d", len(personnel_excluded))
+    final_codes = base_codes - personnel_excluded
+    result = base_df[base_df["基金代码"].map(_safe_code).isin(final_codes)].copy()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    result.to_csv(output_path, index=False, encoding="utf-8-sig")
+    log.info("[eligible] 合并 base - personnel_excluded，写入 %s", output_path)
+    return output_path
 
 
 def _ensure_fee_filtered(

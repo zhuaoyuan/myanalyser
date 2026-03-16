@@ -59,6 +59,26 @@ SCENARIOS = """
 - prep_rule_b_scale_exactly_2: 最新规模恰好2亿 不保留（>2亿才保留）
 - prep_rule_b_no_scale_before_end: end_date 前无规模数据 排除
 - prep_rule_b_same_date_last: 同日期多行取 last
+## rule f 人事变动（需求 20260316_prep_eligible_人事变动过滤）
+### 正常场景
+- rule_f_personnel_in_window_excluded: [end-1年,end] 内有人事变动 → 排除
+- rule_f_personnel_outside_window_retained: 人事变动在窗口外 → 保留
+- rule_f_personnel_dir_none: personnel_dir=None 时跳过规则 f，全部保留
+- rule_f_personnel_dir_not_exists: personnel_dir 目录不存在时跳过规则 f
+- rule_f_no_personnel_file: 基金无人事 CSV 文件应保留
+- rule_f_date_column_fallback: 兼容日期列「日期」（无公告日期时）
+- rule_f_cache_split: base/personnel 拆分缓存正确写入和加载
+### 异常场景
+- rule_f_personnel_dir_is_file: personnel_dir 指向文件而非目录 → 跳过
+- rule_f_csv_parse_error: 人事 CSV 解析失败 → 视为无人事变动（不排除）
+### 边界条件
+- rule_f_empty_personnel_csv: 人事 CSV 为空 → 视为无人事变动
+- rule_f_no_date_column: 人事 CSV 无公告日期/日期列 → 视为无人事变动
+- rule_f_dates_unparseable: 人事 CSV 日期全部无法解析 → 视为无人事变动
+- rule_f_date_at_window_start: 日期恰好等于 window_start 边界 → 排除
+- rule_f_date_at_window_end: 日期恰好等于 window_end 边界 → 排除
+- rule_f_multiple_records_partial_in_window: 多条记录部分在窗口内 → 排除
+- rule_f_compute_personnel_excluded_and_merge: 从 base + personnel 合并产出
 """
 
 
@@ -597,6 +617,309 @@ class TestPrepEligibleWindow:
         )
         result = pd.read_csv(out, dtype=str)
         assert "000001" in set(result["基金代码"].str.zfill(6)), "规则f 不应排除窗口外人事变动的基金"
+
+    def test_rule_f_personnel_dir_none(self, tmp_path: Path) -> None:
+        """规则f：personnel_dir=None 时跳过规则 f，全部保留"""
+        work = self._minimal_work_dir(tmp_path, ["000001"])
+        personnel_dir = tmp_path / "personnel"
+        personnel_dir.mkdir(parents=True)
+        _write_csv(
+            personnel_dir / "000001.csv",
+            pd.DataFrame({"基金代码": ["000001"], "公告日期": ["2024-06-01"], "报告ID": ["AN1"]}),
+        )
+        from v2.filters.prep_eligible_window import run
+        out = run(
+            work_dir=work,
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+            personnel_dir=None,
+            output_path=tmp_path / "eligible.csv",
+        )
+        result = pd.read_csv(out, dtype=str)
+        assert "000001" in set(result["基金代码"].str.zfill(6))
+
+    def test_rule_f_personnel_dir_not_exists(self, tmp_path: Path) -> None:
+        """规则f：personnel_dir 目录不存在时跳过规则 f"""
+        work = self._minimal_work_dir(tmp_path, ["000001"])
+        non_existent = tmp_path / "nonexistent_personnel"
+        from v2.filters.prep_eligible_window import run
+        out = run(
+            work_dir=work,
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+            personnel_dir=non_existent,
+            output_path=tmp_path / "eligible.csv",
+        )
+        result = pd.read_csv(out, dtype=str)
+        assert "000001" in set(result["基金代码"].str.zfill(6))
+
+    def test_rule_f_no_personnel_file(self, tmp_path: Path) -> None:
+        """规则f：基金无人事 CSV 文件应保留"""
+        work = self._minimal_work_dir(tmp_path, ["000001"])
+        personnel_dir = tmp_path / "personnel"
+        personnel_dir.mkdir(parents=True)
+        # 不创建 000001.csv
+        from v2.filters.prep_eligible_window import run
+        out = run(
+            work_dir=work,
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+            personnel_dir=personnel_dir,
+            output_path=tmp_path / "eligible.csv",
+        )
+        result = pd.read_csv(out, dtype=str)
+        assert "000001" in set(result["基金代码"].str.zfill(6))
+
+    def test_rule_f_date_column_fallback(self, tmp_path: Path) -> None:
+        """规则f：兼容日期列「日期」（无公告日期时）"""
+        work = self._minimal_work_dir(tmp_path, ["000001"])
+        personnel_dir = tmp_path / "personnel"
+        personnel_dir.mkdir(parents=True)
+        _write_csv(
+            personnel_dir / "000001.csv",
+            pd.DataFrame({"基金代码": ["000001"], "日期": ["2024-06-01"], "报告ID": ["AN1"]}),
+        )
+        from v2.filters.prep_eligible_window import run
+        out = run(
+            work_dir=work,
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+            personnel_dir=personnel_dir,
+            output_path=tmp_path / "eligible.csv",
+        )
+        result = pd.read_csv(out, dtype=str)
+        assert "000001" not in set(result["基金代码"].str.zfill(6))
+
+    def test_rule_f_cache_split(self, tmp_path: Path) -> None:
+        """规则f：base/personnel 拆分缓存正确写入和加载"""
+        work = self._minimal_work_dir(tmp_path, ["000001", "000002"])
+        personnel_dir = tmp_path / "personnel"
+        personnel_dir.mkdir(parents=True)
+        _write_csv(
+            personnel_dir / "000001.csv",
+            pd.DataFrame({"基金代码": ["000001"], "公告日期": ["2024-06-01"], "报告ID": ["AN1"]}),
+        )
+        output_path = tmp_path / "out" / "eligible.csv"
+        from v2.filters.prep_eligible_window import run
+        run(
+            work_dir=work,
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+            personnel_dir=personnel_dir,
+            output_path=output_path,
+        )
+        cache_dir = output_path.parent
+        base_path = cache_dir / "eligible_base_2024-01-01_2024-12-31.csv"
+        personnel_path = cache_dir / "personnel_excluded_2024-01-01_2024-12-31.csv"
+        assert base_path.exists()
+        assert personnel_path.exists()
+        excl_df = pd.read_csv(personnel_path, dtype=str)
+        assert "000001" in set(excl_df["基金编码"].str.zfill(6))
+        run(
+            work_dir=work,
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+            personnel_dir=personnel_dir,
+            output_path=output_path,
+        )
+        result = pd.read_csv(output_path, dtype=str)
+        assert "000001" not in set(result["基金代码"].str.zfill(6))
+
+    def test_rule_f_personnel_dir_is_file(self, tmp_path: Path) -> None:
+        """规则f：personnel_dir 指向文件而非目录时跳过"""
+        work = self._minimal_work_dir(tmp_path, ["000001"])
+        fake_file = tmp_path / "fake_dir"
+        fake_file.write_text("not a dir", encoding="utf-8")
+        from v2.filters.prep_eligible_window import run
+        out = run(
+            work_dir=work,
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+            personnel_dir=fake_file,
+            output_path=tmp_path / "eligible.csv",
+        )
+        result = pd.read_csv(out, dtype=str)
+        assert "000001" in set(result["基金代码"].str.zfill(6))
+
+    def test_rule_f_csv_parse_error(self, tmp_path: Path) -> None:
+        """规则f：人事 CSV 解析失败时视为无人事变动"""
+        work = self._minimal_work_dir(tmp_path, ["000001"])
+        personnel_dir = tmp_path / "personnel"
+        personnel_dir.mkdir(parents=True)
+        (personnel_dir / "000001.csv").write_text("invalid,csv\nbroken\n", encoding="utf-8")
+        from v2.filters.prep_eligible_window import run
+        out = run(
+            work_dir=work,
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+            personnel_dir=personnel_dir,
+            output_path=tmp_path / "eligible.csv",
+        )
+        result = pd.read_csv(out, dtype=str)
+        assert "000001" in set(result["基金代码"].str.zfill(6))
+
+    def test_rule_f_empty_personnel_csv(self, tmp_path: Path) -> None:
+        """规则f：人事 CSV 为空时视为无人事变动"""
+        work = self._minimal_work_dir(tmp_path, ["000001"])
+        personnel_dir = tmp_path / "personnel"
+        personnel_dir.mkdir(parents=True)
+        _write_csv(personnel_dir / "000001.csv", pd.DataFrame())
+        from v2.filters.prep_eligible_window import run
+        out = run(
+            work_dir=work,
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+            personnel_dir=personnel_dir,
+            output_path=tmp_path / "eligible.csv",
+        )
+        result = pd.read_csv(out, dtype=str)
+        assert "000001" in set(result["基金代码"].str.zfill(6))
+
+    def test_rule_f_no_date_column(self, tmp_path: Path) -> None:
+        """规则f：人事 CSV 无公告日期/日期列时视为无人事变动"""
+        work = self._minimal_work_dir(tmp_path, ["000001"])
+        personnel_dir = tmp_path / "personnel"
+        personnel_dir.mkdir(parents=True)
+        _write_csv(
+            personnel_dir / "000001.csv",
+            pd.DataFrame({"基金代码": ["000001"], "其他列": ["xxx"]}),
+        )
+        from v2.filters.prep_eligible_window import run
+        out = run(
+            work_dir=work,
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+            personnel_dir=personnel_dir,
+            output_path=tmp_path / "eligible.csv",
+        )
+        result = pd.read_csv(out, dtype=str)
+        assert "000001" in set(result["基金代码"].str.zfill(6))
+
+    def test_rule_f_dates_unparseable(self, tmp_path: Path) -> None:
+        """规则f：人事 CSV 日期全部无法解析时视为无人事变动"""
+        work = self._minimal_work_dir(tmp_path, ["000001"])
+        personnel_dir = tmp_path / "personnel"
+        personnel_dir.mkdir(parents=True)
+        _write_csv(
+            personnel_dir / "000001.csv",
+            pd.DataFrame({
+                "基金代码": ["000001", "000001"],
+                "公告日期": ["无效日期", "---"],
+                "报告ID": ["AN1", "AN2"],
+            }),
+        )
+        from v2.filters.prep_eligible_window import run
+        out = run(
+            work_dir=work,
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+            personnel_dir=personnel_dir,
+            output_path=tmp_path / "eligible.csv",
+        )
+        result = pd.read_csv(out, dtype=str)
+        assert "000001" in set(result["基金代码"].str.zfill(6))
+
+    def test_rule_f_date_at_window_start(self, tmp_path: Path) -> None:
+        """规则f：日期恰好等于 window_start 边界应排除"""
+        work = self._minimal_work_dir(tmp_path, ["000001"])
+        personnel_dir = tmp_path / "personnel"
+        personnel_dir.mkdir(parents=True)
+        # end=2024-12-31, window_start=2023-12-31
+        _write_csv(
+            personnel_dir / "000001.csv",
+            pd.DataFrame({"基金代码": ["000001"], "公告日期": ["2023-12-31"], "报告ID": ["AN1"]}),
+        )
+        from v2.filters.prep_eligible_window import run
+        out = run(
+            work_dir=work,
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+            personnel_dir=personnel_dir,
+            output_path=tmp_path / "eligible.csv",
+        )
+        result = pd.read_csv(out, dtype=str)
+        assert "000001" not in set(result["基金代码"].str.zfill(6))
+
+    def test_rule_f_date_at_window_end(self, tmp_path: Path) -> None:
+        """规则f：日期恰好等于 window_end 边界应排除"""
+        work = self._minimal_work_dir(tmp_path, ["000001"])
+        personnel_dir = tmp_path / "personnel"
+        personnel_dir.mkdir(parents=True)
+        _write_csv(
+            personnel_dir / "000001.csv",
+            pd.DataFrame({"基金代码": ["000001"], "公告日期": ["2024-12-31"], "报告ID": ["AN1"]}),
+        )
+        from v2.filters.prep_eligible_window import run
+        out = run(
+            work_dir=work,
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+            personnel_dir=personnel_dir,
+            output_path=tmp_path / "eligible.csv",
+        )
+        result = pd.read_csv(out, dtype=str)
+        assert "000001" not in set(result["基金代码"].str.zfill(6))
+
+    def test_rule_f_multiple_records_partial_in_window(self, tmp_path: Path) -> None:
+        """规则f：多条记录部分在窗口内应排除"""
+        work = self._minimal_work_dir(tmp_path, ["000001"])
+        personnel_dir = tmp_path / "personnel"
+        personnel_dir.mkdir(parents=True)
+        _write_csv(
+            personnel_dir / "000001.csv",
+            pd.DataFrame({
+                "基金代码": ["000001"] * 2,
+                "公告日期": ["2023-01-01", "2024-06-01"],
+                "报告ID": ["AN1", "AN2"],
+            }),
+        )
+        from v2.filters.prep_eligible_window import run
+        out = run(
+            work_dir=work,
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+            personnel_dir=personnel_dir,
+            output_path=tmp_path / "eligible.csv",
+        )
+        result = pd.read_csv(out, dtype=str)
+        assert "000001" not in set(result["基金代码"].str.zfill(6))
+
+    def test_rule_f_compute_personnel_excluded_and_merge(self, tmp_path: Path) -> None:
+        """规则f：compute_personnel_excluded_and_merge 从 base + personnel 合并产出"""
+        from v2.filters.prep_eligible_window import (
+            compute_personnel_excluded_and_merge,
+            run,
+        )
+        work = self._minimal_work_dir(tmp_path, ["000001", "000002"])
+        personnel_dir = tmp_path / "personnel"
+        personnel_dir.mkdir(parents=True)
+        _write_csv(
+            personnel_dir / "000001.csv",
+            pd.DataFrame({"基金代码": ["000001"], "公告日期": ["2024-06-01"], "报告ID": ["AN1"]}),
+        )
+        out = run(
+            work_dir=work,
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+            personnel_dir=None,
+            output_path=tmp_path / "eligible_nof.csv",
+        )
+        # cache_dir = output_path.parent = tmp_path
+        base_path = tmp_path / "eligible_base_2024-01-01_2024-12-31.csv"
+        personnel_excluded_path = tmp_path / "personnel_excluded_2024-01-01_2024-12-31.csv"
+        output_path = tmp_path / "eligible_merged.csv"
+        result_path = compute_personnel_excluded_and_merge(
+            base_path=base_path,
+            personnel_dir=personnel_dir,
+            personnel_excluded_path=personnel_excluded_path,
+            output_path=output_path,
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+        )
+        result = pd.read_csv(result_path, dtype=str)
+        codes = set(result["基金代码"].map(lambda x: str(x).zfill(6)))
+        assert "000001" not in codes
+        assert "000002" in codes
 
     def test_rule_a_consecutive_over_60_excluded(self, tmp_path: Path) -> None:
         """规则a：[成立+2年,end_date] 内机构持仓连续两次>60% 应排除"""

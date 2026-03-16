@@ -61,7 +61,10 @@ from v2.compare.compare_adjusted_nav_and_cum_return_window import (
 )
 from backtest_helpers import compute_end_extended_str
 from v2.filters.filter_funds_for_next_step import filter_funds_for_next_step
-from v2.filters.prep_eligible_window import run as run_prep_eligible_window
+from v2.filters.prep_eligible_window import (
+    compute_personnel_excluded_and_merge,
+    run as run_prep_eligible_window,
+)
 from check_trade_day_data_integrity import (
     load_trade_days,
     load_eligible_fund_codes,
@@ -419,12 +422,14 @@ def main() -> None:
                 final_df.to_csv(eligible_csv, index=False, encoding="utf-8-sig")
                 logger.info("[eligible] cache hit (base + personnel merge): %s", eligible_csv)
             else:
-                run_prep_eligible_window(
-                    work_dir=prep_work_dir,
+                # base 存在、personnel 不存在：仅计算 personnel 并合并，避免重复跑 c.1+a+b+e
+                compute_personnel_excluded_and_merge(
+                    base_path=base_path,
+                    personnel_dir=personnel_dir_path,
+                    personnel_excluded_path=personnel_excluded_path,
+                    output_path=eligible_csv,
                     start_date=start_str,
                     end_date=end_str,
-                    personnel_dir=personnel_dir_path,
-                    output_path=eligible_csv,
                     logger=logger,
                 )
         else:

@@ -236,7 +236,7 @@ def compare_adjusted_nav_and_cum_return_window(
 
             details.append(
                 {
-                    "期初日期": period_start_ts.strftime("%Y-%m-%d"),  # noqa: RUF001
+                    "期初日期": period_start_ts.strftime("%Y-%m-%d"),
                     "期末日期": window_end.strftime("%Y-%m-%d"),
                     "本地期初值": _format_num(local_start),
                     "本地期末值": _format_num(local_end),

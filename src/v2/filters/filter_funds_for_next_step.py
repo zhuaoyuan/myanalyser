@@ -2,6 +2,9 @@
 
 协议约定（详见 docs/参考/v2日期与区间协议约定.md）：日期区间 [start_date, end_date] 双闭。
 
+注意：基金代码使用 v2.utils.safe_fund_code，对非纯数字（如 'TBD'、'---'）返回空串。
+旧版 str.zfill(6) 会得到 '000tbd' 等；若存在此类脏数据需先清洗。
+
 规则：
   1. 规则1: 基金必须在 fund_overview.csv 中
   2. 规则2: 必须在 fund_nav_by_code 中存在 NAV 原始净值

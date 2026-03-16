@@ -358,6 +358,7 @@ def _run_scoreboard(
         formal_only=True,
         resume=False,
         apply_ddl=False,
+        # fund_db_infra 约定与 myanalyser 平级（workspace 根下）；仓库结构调整时需同步修改
         mysql_ddl=project_root().parent / "fund_db_infra" / "sql" / "mysql_schema.sql",
         clickhouse_ddl=project_root().parent / "fund_db_infra" / "sql" / "clickhouse_schema.sql",
         mysql_host="127.0.0.1",

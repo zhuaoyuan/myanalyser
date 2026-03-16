@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 _root = Path(__file__).resolve().parent.parent
-# tools/prep 必须在 tools/v2 之后插入，以便 test_prep_data_workflow 导入 tools/prep 版本（含 _apply_filters）
+# tools/prep 放在迭代最后，insert(0) 后位于 sys.path 最前，使 test_prep_data_workflow 导入 tools/prep 版本（含 _apply_filters）
 for subdir in ("src", "tools", "tools/v2", "tools/prep"):
     _p = _root / subdir
     if _p.exists() and str(_p) not in sys.path:

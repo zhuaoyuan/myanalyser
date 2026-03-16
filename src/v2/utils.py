@@ -8,7 +8,9 @@ from __future__ import annotations
 def safe_fund_code(value: object) -> str:
     """将输入规范化为 6 位基金代码，非法值返回空串。
 
-    规则：非 6 位纯数字、超长、空值、非数字字符均返回空串。
+    规则：合法范围 0~999999；非纯数字、超长、空值、负数、超范围均返回空串。
+    注意：旧版 str.zfill(6) 未校验数字，'TBD' 会变为 '000tbd'；新版返回 ''，
+    若历史数据含此类脏数据需先清洗。
     """
     if value is None:
         return ""

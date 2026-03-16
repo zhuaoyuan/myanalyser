@@ -11,7 +11,7 @@
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| `--fund-types` | str | 逗号分隔的基金类型，可多选；可选值见 `prep-work-dir/fund_fee_filtered.csv` 的「类型」列 |
+| `--fund-types` | list[str] | 基金类型列表，可空格或逗号分隔；可选值见 `prep-work-dir/fund_fee_filtered.csv` 的「类型」列 |
 
 **可选值示例**（来自 fund_fee_filtered.csv 类型枚举）：
 - A类180天、A类30天、A类365天、A类60天、A类730天
@@ -24,10 +24,10 @@
 
 **示例**：
 ```bash
-# 仅 A 类 730 天
---fund-types "A类730天"
+# 空格分隔
+--fund-types A类730天 C类30天
 
-# A 类与 C 类 30 天
+# 逗号分隔
 --fund-types "A类730天,C类30天"
 ```
 
@@ -35,8 +35,9 @@
 
 ### 1.3 缓存策略
 
-- `filter_dir` 路径包含 `fund_types` 的 hash 后缀，不同 `--fund-types` 组合使用独立缓存
 - `type_allowed_codes` 在 T 循环外加载一次，避免重复读取 fund_fee_filtered.csv
+- **fund_types 非空时**：filter 不缓存，每次执行，便于调整筛选条件
+- **fund_types 为空时**：filter 使用 ruleset_version 区分缓存（方案 C）
 
 ---
 
@@ -50,7 +51,7 @@
 
 ## 3. 实现要点
 
-- `_parse_fund_types(raw)`：解析逗号分隔类型列表，空值返回 `[]`
+- `--fund-types` 使用 `nargs="*"`，argparse 直接得到 `list[str]`，支持空格或逗号分隔
 - `_load_type_filtered_codes(prep_work_dir, fund_types)`：从 fund_fee_filtered.csv 筛选指定类型的基金编码
 - `_build_purchase_csv_for_filter(...)`：按类型与 eligible 取交集，返回供 filter 使用的 purchase CSV 路径
 - `code_col` 显式检查：eligible CSV 至少存在「基金编码」或「基金代码」之一，否则抛出含列名的 `ValueError`
@@ -63,9 +64,7 @@
 |------|------|
 | code_col 回退逻辑有漏洞（两列都不存在时 KeyError） | 使用 if/elif/else 显式检查并抛出 ValueError |
 | type_allowed_codes 循环内重复读取 | 在 T 循环外加载一次 |
-| _parse_fund_types 重复 str(raw) | 先 `s = str(raw).strip() if raw is not None else ""` 再解析 |
 | fund_types 分支约 30 行可读性一般 | 抽取为 `_build_purchase_csv_for_filter` 独立函数 |
-| MD5 8 位碰撞风险 | 保持 MD5（review 认为可接受） |
 
 ---
 
@@ -77,6 +76,16 @@
 
 ---
 
-## 6. 提交记录
+## 6. 补充变更（后续迭代）
+
+| 变更项 | 说明 |
+|--------|------|
+| 参数类型改为 list[str] | `--fund-types` 使用 `nargs="*"`，直接得到 list；支持空格或逗号分隔，如 `--fund-types A类730天 C类30天` |
+| fund_types 非空时 filter 不缓存 | 指定类型筛选时每次执行 filter，便于调整条件；未指定时仍使用 ruleset_version 缓存 |
+| 去掉 fund_types_suffix | filter_dir 不再加 fund_types hash 后缀，移除 hashlib 依赖 |
+
+---
+
+## 7. 提交记录
 
 - v0316.18 (038a24c)：基金类型筛选参数及 review 相关修改

@@ -89,3 +89,32 @@
 ## 7. 提交记录
 
 - v0316.18 (038a24c)：基金类型筛选参数及 review 相关修改
+
+---
+
+## 8. 单元测试（2026-03-16）
+
+### 场景清单
+
+| 类别 | ID | 场景 | 状态 |
+|------|-----|------|------|
+| 正常 | N01 | CSV 存在、指定类型有匹配 → 返回基金编码集合 | 通过 |
+| 正常 | N02 | 多种类型均有匹配 | 通过 |
+| 正常 | N03 | fund_types 为空 → 直接返回 eligible_csv | 通过 |
+| 正常 | N04 | fund_types 非空且与 eligible 有交集 → 写入 filter_dir 并返回路径 | 通过 |
+| 正常 | N05 | eligible 使用「基金代码」列 | 通过 |
+| 正常 | N06 | CLI --fund-types 选项存在且帮助信息正确 | 通过 |
+| 异常 | E01 | fund_fee_filtered.csv 不存在 → FileNotFoundError | 通过 |
+| 异常 | E02 | CSV 缺少「类型」列 → ValueError | 通过 |
+| 异常 | E03 | CSV 缺少「基金编码」列 → ValueError | 通过 |
+| 异常 | E04 | 指定类型在 CSV 中无匹配（type_allowed_codes 为空）→ ValueError | 通过 |
+| 异常 | E05 | eligible 与 type_allowed_codes 取交后为空 → ValueError | 通过 |
+| 异常 | E06 | eligible 既无「基金编码」也无「基金代码」→ ValueError | 通过 |
+| 边界 | B01 | 类型列有前后空格，应能匹配 | 通过 |
+| 边界 | B02 | 基金编码统一为 6 位（zfill） | 通过 |
+| 边界 | B03 | eligible 中基金编码格式不一，zfill(6) 后匹配 | 通过 |
+| 边界 | B04 | type_allowed_codes=None 时直接返回 eligible | 通过 |
+
+### 测试文件
+
+- `myanalyser/tests/test_multi_t_backtest_fund_types.py`

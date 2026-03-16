@@ -405,6 +405,7 @@ def main() -> None:
                 work_dir=prep_work_dir,
                 start_date=start_str,
                 end_date=end_str,
+                personnel_dir=fund_etl_dir / "fund_personnel_by_code",
                 output_path=eligible_csv,
                 logger=logger,
             )

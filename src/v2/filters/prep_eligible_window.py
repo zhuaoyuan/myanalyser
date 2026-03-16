@@ -78,6 +78,31 @@ def _has_consecutive_over_60(grp: pd.DataFrame, date_col: str) -> bool:
     return False
 
 
+def _has_personnel_in_window(
+    code: str,
+    personnel_dir: Path,
+    window_start: pd.Timestamp,
+    window_end: pd.Timestamp,
+) -> bool:
+    """判断基金在 [window_start, window_end] 内是否有人事变动记录。"""
+    path = personnel_dir / f"{code}.csv"
+    if not path.exists():
+        return False
+    try:
+        df = pd.read_csv(path, dtype={"基金代码": str}, encoding="utf-8-sig")
+    except Exception:
+        return False
+    date_col = "公告日期" if "公告日期" in df.columns else "日期"
+    if date_col not in df.columns or df.empty:
+        return False
+    df = df.copy()
+    df["_dt"] = df[date_col].map(_parse_date)
+    df = df.dropna(subset=["_dt"])
+    if df.empty:
+        return False
+    return ((df["_dt"] >= window_start) & (df["_dt"] <= window_end)).any()
+
+
 def _ensure_fee_filtered(
     fee_structured_csv: Path,
     fee_filtered_csv: Path,
@@ -108,6 +133,7 @@ def run(
     start_date: str,
     end_date: str,
     *,
+    personnel_dir: Path | None = None,
     output_path: Path | None = None,
     logger: logging.Logger | None = None,
 ) -> Path:
@@ -207,6 +233,20 @@ def run(
     else:
         log.warning("[eligible] e 无成立日期列，跳过该条件")
 
+    # f: 排除 [end_date-1年, end_date] 内有人事变动记录的基金
+    if personnel_dir is not None and personnel_dir.is_dir():
+        one_year = pd.DateOffset(years=1)
+        personnel_start = end_ts - one_year
+        exclude_f: set[str] = set()
+        for code in list(codes):
+            if _has_personnel_in_window(code, personnel_dir, personnel_start, end_ts):
+                exclude_f.add(code)
+        codes -= exclude_f
+        log.info("[eligible] f([end-1年,end]内人事变动排除) 后 %d，排除 %d", len(codes), len(exclude_f))
+    else:
+        if personnel_dir is not None:
+            log.warning("[eligible] f 人事目录不存在或非目录，跳过: %s", personnel_dir)
+
     result = purchase_df[purchase_df["基金代码"].map(_safe_code).isin(codes)].copy()
     log.info("[eligible] 最终结果 %d 只", len(result))
 
@@ -226,6 +266,7 @@ def main() -> int:
     parser.add_argument("--start-date", required=True)
     parser.add_argument("--end-date", required=True)
     parser.add_argument("-o", "--output", type=Path, default=None)
+    parser.add_argument("--personnel-dir", type=Path, default=None, help="人事变动目录 fund_personnel_by_code，传入后排除[end-1年,end]内有人事变动的基金")
     args = parser.parse_args()
 
     try:
@@ -233,6 +274,7 @@ def main() -> int:
             work_dir=args.work_dir,
             start_date=args.start_date,
             end_date=args.end_date,
+            personnel_dir=args.personnel_dir,
             output_path=args.output,
             logger=logger,
         )

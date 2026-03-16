@@ -269,6 +269,7 @@ def run_verify(
                 work_dir=prep_work_dir.resolve(),
                 start_date=start_str,
                 end_date=end_str,
+                personnel_dir=fund_etl_dir / "fund_personnel_by_code",
                 output_path=eligible_csv,
                 logger=logger,
             )
@@ -284,12 +285,14 @@ def run_verify(
             "a": "排除: [成立+2年, end_date] 内机构持仓连续两次>60%",
             "b": "仅保留: end_date 前最新规模>2亿",
             "e": "仅保留: start_date 前成立",
+            "f": "排除: [end_date-1年, end_date] 内有人事变动记录的基金",
             "依赖文件": [
                 str(prep_work_dir / "fund_purchase.csv"),
                 str(prep_work_dir / "fund_fee_filtered.csv"),
                 str(prep_work_dir / "fund_cyrjg.csv"),
                 str(prep_work_dir / "fund_gmbd.csv"),
                 str(prep_work_dir / "fund_overview.csv"),
+                str(fund_etl_dir / "fund_personnel_by_code"),
             ],
         }
 

@@ -542,6 +542,63 @@ class TestPrepEligibleWindow:
         assert out == custom.resolve()
         assert custom.exists()
 
+    def test_rule_f_personnel_in_window_excluded(self, tmp_path: Path) -> None:
+        """规则f：[end_date-1年, end_date] 内有人事变动记录的基金应排除"""
+        work = self._minimal_work_dir(tmp_path, ["000001", "000002"])
+        personnel_dir = tmp_path / "personnel"
+        personnel_dir.mkdir(parents=True)
+        # 000001: 2024-06-01 人事变动，在 [2023-12-31, 2024-12-31] 窗口内，应排除
+        _write_csv(
+            personnel_dir / "000001.csv",
+            pd.DataFrame({
+                "基金代码": ["000001"],
+                "公告标题": ["基金经理调整"],
+                "基金名称": ["测试基金"],
+                "公告日期": ["2024-06-01"],
+                "报告ID": ["AN1"],
+            }),
+        )
+        # 000002: 无人事文件，应保留
+        from v2.filters.prep_eligible_window import run
+        out = run(
+            work_dir=work,
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+            personnel_dir=personnel_dir,
+            output_path=tmp_path / "eligible.csv",
+        )
+        result = pd.read_csv(out, dtype=str)
+        codes = set(result["基金代码"].str.zfill(6))
+        assert "000001" not in codes
+        assert "000002" in codes
+
+    def test_rule_f_personnel_outside_window_retained(self, tmp_path: Path) -> None:
+        """规则f：人事变动在窗口外应保留"""
+        work = self._minimal_work_dir(tmp_path, ["000001"])
+        personnel_dir = tmp_path / "personnel"
+        personnel_dir.mkdir(parents=True)
+        # 2023-01-01 在 [2023-12-31, 2024-12-31] 窗口前，应保留
+        _write_csv(
+            personnel_dir / "000001.csv",
+            pd.DataFrame({
+                "基金代码": ["000001"],
+                "公告标题": ["基金经理调整"],
+                "公告日期": ["2023-01-01"],
+                "报告ID": ["AN1"],
+            }),
+        )
+        from v2.filters.prep_eligible_window import run
+        out = run(
+            work_dir=work,
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+            personnel_dir=personnel_dir,
+            output_path=tmp_path / "eligible.csv",
+        )
+        result = pd.read_csv(out, dtype=str)
+        assert len(result) >= 1
+        assert "000001" in set(result["基金代码"].str.zfill(6))
+
     def test_rule_a_consecutive_over_60_excluded(self, tmp_path: Path) -> None:
         """规则a：[成立+2年,end_date] 内机构持仓连续两次>60% 应排除"""
         work = tmp_path / "work"

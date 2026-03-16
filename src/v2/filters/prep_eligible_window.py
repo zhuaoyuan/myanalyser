@@ -194,7 +194,7 @@ def run(
         b_df = b_df[b_df["_code"] != ""].dropna(subset=["_scale"])
         # 同日期多行时 groupby.last 取最后一条，避免 idxmax 仅取首条
         latest = b_df.sort_values("日期").groupby("_code", as_index=False).last()
-        include_b = set(latest[latest["_scale"] > 2]["_code"].astype(str).str.strip().str.zfill(6).tolist())
+        include_b = set(latest[latest["_scale"] > 2]["_code"].tolist())  # _code 已由 _safe_code 规范化
         codes &= include_b
         log.info("[eligible] b(end_date前最新规模>2亿) 后 %d", len(codes))
     else:

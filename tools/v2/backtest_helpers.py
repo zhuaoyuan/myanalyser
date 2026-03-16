@@ -1,6 +1,7 @@
 """v2 回测相关共享辅助函数。
 
-供 multi_t_backtest、verify_filter_flow_report 等复用。
+位置: myanalyser/tools/v2/backtest_helpers.py
+供 multi_t_backtest、verify_filter_flow_report 等复用；通过 sys.path 插入 tools/v2 目录后 import。
 """
 from __future__ import annotations
 
@@ -33,8 +34,9 @@ def compute_end_extended_str(
     t_index = bisect_left(trading_days, as_of_date)
     end_index = t_index + hold_days
     if end_index >= len(trading_days):
+        remaining = len(trading_days) - t_index - 1  # T 后（不含 T 当日）的交易日数
         raise ValueError(
             f"hold-days ({hold_days}) 超出交易日历范围：T={as_of_date.date()} 后 "
-            f"仅剩 {len(trading_days) - t_index - 1} 个交易日，多 T 回测将中断"
+            f"仅剩 {remaining} 个交易日，多 T 回测将中断"
         )
     return trading_days[end_index].strftime("%Y-%m-%d")

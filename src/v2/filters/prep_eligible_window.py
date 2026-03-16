@@ -85,12 +85,15 @@ def _has_personnel_in_window(
     window_end: pd.Timestamp,
 ) -> bool:
     """判断基金在 [window_start, window_end] 内是否有人事变动记录。"""
+    if not code or not code.isdigit() or len(code) > 6:
+        return False
     path = personnel_dir / f"{code}.csv"
     if not path.exists():
         return False
     try:
         df = pd.read_csv(path, dtype={"基金代码": str}, encoding="utf-8-sig")
-    except Exception:
+    except (OSError, pd.errors.ParserError, UnicodeDecodeError, ValueError) as e:
+        logging.getLogger(__name__).debug("[eligible] f 解析人事文件 %s 失败: %s", path, e)
         return False
     date_col = "公告日期" if "公告日期" in df.columns else "日期"
     if date_col not in df.columns or df.empty:
@@ -238,7 +241,7 @@ def run(
         one_year = pd.DateOffset(years=1)
         personnel_start = end_ts - one_year
         exclude_f: set[str] = set()
-        for code in list(codes):
+        for code in codes:
             if _has_personnel_in_window(code, personnel_dir, personnel_start, end_ts):
                 exclude_f.add(code)
         codes -= exclude_f

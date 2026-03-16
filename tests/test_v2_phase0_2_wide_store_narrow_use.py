@@ -596,8 +596,7 @@ class TestPrepEligibleWindow:
             output_path=tmp_path / "eligible.csv",
         )
         result = pd.read_csv(out, dtype=str)
-        assert len(result) >= 1
-        assert "000001" in set(result["基金代码"].str.zfill(6))
+        assert "000001" in set(result["基金代码"].str.zfill(6)), "规则f 不应排除窗口外人事变动的基金"
 
     def test_rule_a_consecutive_over_60_excluded(self, tmp_path: Path) -> None:
         """规则a：[成立+2年,end_date] 内机构持仓连续两次>60% 应排除"""

@@ -401,6 +401,7 @@ def main() -> None:
             logger.info("[eligible] cache hit: %s", eligible_csv)
         else:
             eligible_dir.mkdir(parents=True, exist_ok=True)
+            # personnel_dir 来自 fund_etl，由 run_full_pipeline step6 产出；若不存在则 rule f 跳过
             run_prep_eligible_window(
                 work_dir=prep_work_dir,
                 start_date=start_str,

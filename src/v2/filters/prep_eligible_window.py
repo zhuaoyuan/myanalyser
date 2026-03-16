@@ -1,4 +1,10 @@
-"""v2: 预备 eligible 按窗口计算（仅使用本地缓存，不联网）。"""
+"""v2: 预备 eligible 按窗口计算（仅使用本地缓存，不联网）。
+
+缓存机制：
+- eligible_base_{start}_{end}.csv：c.1+a+b+e 结果，不依赖 personnel_dir
+- personnel_excluded_{start}_{end}.csv：规则 f 排除的基金编码
+- eligible_fund_candidates.csv：base - personnel_excluded，加载时合并
+"""
 from __future__ import annotations
 
 import argparse
@@ -6,6 +12,7 @@ import importlib.util
 import logging
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import pandas as pd
@@ -21,6 +28,8 @@ if str(_MYANALYSER / "src") not in sys.path:
     sys.path.insert(0, str(_MYANALYSER / "src"))
 if str(_PREP_TOOLS) not in sys.path:
     sys.path.insert(0, str(_PREP_TOOLS))
+
+_MAX_PERSONNEL_WORKERS = 16
 
 
 def _safe_code(v: object) -> str:
@@ -78,18 +87,12 @@ def _has_consecutive_over_60(grp: pd.DataFrame, date_col: str) -> bool:
     return False
 
 
-def _has_personnel_in_window(
-    code: str,
-    personnel_dir: Path,
+def _check_personnel_one(
+    path: Path,
     window_start: pd.Timestamp,
     window_end: pd.Timestamp,
 ) -> bool:
-    """判断基金在 [window_start, window_end] 内是否有人事变动记录。"""
-    if not code or not code.isdigit() or len(code) > 6:
-        return False
-    path = personnel_dir / f"{code}.csv"
-    if not path.exists():
-        return False
+    """单文件判定：是否在 [window_start, window_end] 内有人事变动。供并发调用。"""
     try:
         df = pd.read_csv(path, dtype={"基金代码": str}, encoding="utf-8-sig")
     except (OSError, pd.errors.ParserError, UnicodeDecodeError, ValueError) as e:
@@ -104,6 +107,33 @@ def _has_personnel_in_window(
     if df.empty:
         return False
     return ((df["_dt"] >= window_start) & (df["_dt"] <= window_end)).any()
+
+
+def _compute_personnel_excluded(
+    codes: set[str],
+    personnel_dir: Path,
+    window_start: pd.Timestamp,
+    window_end: pd.Timestamp,
+    max_workers: int = _MAX_PERSONNEL_WORKERS,
+) -> set[str]:
+    """仅对 personnel_dir 中存在的 {code}.csv 做并发读取，返回窗口内有人事变动的基金编码集合。"""
+    existent = [(c, personnel_dir / f"{c}.csv") for c in codes if (personnel_dir / f"{c}.csv").exists()]
+    if not existent:
+        return set()
+    exclude_f: set[str] = set()
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        future_to_code = {
+            ex.submit(_check_personnel_one, p, window_start, window_end): c
+            for c, p in existent
+        }
+        for future in as_completed(future_to_code):
+            code = future_to_code[future]
+            try:
+                if future.result():
+                    exclude_f.add(code)
+            except Exception:  # noqa: BLE001
+                pass
+    return exclude_f
 
 
 def _ensure_fee_filtered(
@@ -236,25 +266,47 @@ def run(
     else:
         log.warning("[eligible] e 无成立日期列，跳过该条件")
 
-    # f: 排除 [end_date-1年, end_date] 内有人事变动记录的基金
+    base_codes = codes.copy()
+    output_path = (output_path or (work_dir / "eligible_fund_candidates.csv")).resolve()
+    cache_dir = output_path.parent
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    base_path = cache_dir / f"eligible_base_{start_date}_{end_date}.csv"
+    personnel_path = cache_dir / f"personnel_excluded_{start_date}_{end_date}.csv"
+
+    # Base 缓存：不依赖 personnel_dir
+    if base_path.exists():
+        base_df = pd.read_csv(base_path, dtype=str, encoding="utf-8-sig")
+        log.info("[eligible] base cache hit: %s", base_path)
+    else:
+        base_df = purchase_df[purchase_df["基金代码"].map(_safe_code).isin(base_codes)].copy()
+        base_df.to_csv(base_path, index=False, encoding="utf-8-sig")
+        log.info("[eligible] base cache write: %s", base_path)
+
+    # f: 人事变动排除，拆分缓存，加载时合并
+    personnel_excluded: set[str] = set()
     if personnel_dir is not None and personnel_dir.is_dir():
-        one_year = pd.DateOffset(years=1)
-        personnel_start = end_ts - one_year
-        exclude_f: set[str] = set()
-        for code in codes:
-            if _has_personnel_in_window(code, personnel_dir, personnel_start, end_ts):
-                exclude_f.add(code)
-        codes -= exclude_f
-        log.info("[eligible] f([end-1年,end]内人事变动排除) 后 %d，排除 %d", len(codes), len(exclude_f))
+        if personnel_path.exists():
+            excl_df = pd.read_csv(personnel_path, dtype=str, encoding="utf-8-sig")
+            code_col = "基金编码" if "基金编码" in excl_df.columns else "基金代码"
+            personnel_excluded = {_safe_code(c) for c in excl_df[code_col].dropna().tolist()}
+            log.info("[eligible] f personnel cache hit: %s，排除 %d", personnel_path, len(personnel_excluded))
+        else:
+            personnel_start = end_ts - pd.DateOffset(years=1)
+            personnel_excluded = _compute_personnel_excluded(
+                set(base_df["基金代码"].map(_safe_code)), personnel_dir, personnel_start, end_ts
+            )
+            pd.DataFrame({"基金编码": sorted(personnel_excluded)}).to_csv(
+                personnel_path, index=False, encoding="utf-8-sig"
+            )
+            log.info("[eligible] f([end-1年,end]内人事变动排除) cache write: 排除 %d", len(personnel_excluded))
     else:
         if personnel_dir is not None:
             log.warning("[eligible] f 人事目录不存在或非目录，跳过: %s", personnel_dir)
 
-    result = purchase_df[purchase_df["基金代码"].map(_safe_code).isin(codes)].copy()
-    log.info("[eligible] 最终结果 %d 只", len(result))
+    final_codes = set(base_df["基金代码"].map(_safe_code)) - personnel_excluded
+    result = base_df[base_df["基金代码"].map(_safe_code).isin(final_codes)].copy()
+    log.info("[eligible] 最终结果 %d 只 (base %d - personnel_excluded %d)", len(result), len(base_codes), len(personnel_excluded))
 
-    output_path = (output_path or (work_dir / "eligible_fund_candidates.csv")).resolve()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     result.to_csv(output_path, index=False, encoding="utf-8-sig")
     log.info("[eligible] 写入 %s", output_path)
     return output_path

@@ -397,16 +397,43 @@ def main() -> None:
         )
 
         eligible_csv = eligible_dir / "eligible_fund_candidates.csv"
+        base_path = eligible_dir / f"eligible_base_{start_str}_{end_str}.csv"
+        personnel_excluded_path = eligible_dir / f"personnel_excluded_{start_str}_{end_str}.csv"
+        personnel_dir_path = fund_etl_dir / "fund_personnel_by_code"
+
         if eligible_csv.exists():
             logger.info("[eligible] cache hit: %s", eligible_csv)
+        elif base_path.exists():
+            eligible_dir.mkdir(parents=True, exist_ok=True)
+            if not personnel_dir_path.is_dir():
+                base_df = pd.read_csv(base_path, dtype=str, encoding="utf-8-sig")
+                base_df.to_csv(eligible_csv, index=False, encoding="utf-8-sig")
+                logger.info("[eligible] cache hit (base only, personnel dir absent): %s", eligible_csv)
+            elif personnel_excluded_path.exists():
+                base_df = pd.read_csv(base_path, dtype=str, encoding="utf-8-sig")
+                excl_df = pd.read_csv(personnel_excluded_path, dtype=str, encoding="utf-8-sig")
+                excl_col = "基金编码" if "基金编码" in excl_df.columns else "基金代码"
+                excluded = {str(c).strip().zfill(6) for c in excl_df[excl_col].dropna().tolist() if c}
+                base_df["_code"] = base_df["基金代码"].astype(str).str.strip().str.zfill(6)
+                final_df = base_df[~base_df["_code"].isin(excluded)].drop(columns=["_code"])
+                final_df.to_csv(eligible_csv, index=False, encoding="utf-8-sig")
+                logger.info("[eligible] cache hit (base + personnel merge): %s", eligible_csv)
+            else:
+                run_prep_eligible_window(
+                    work_dir=prep_work_dir,
+                    start_date=start_str,
+                    end_date=end_str,
+                    personnel_dir=personnel_dir_path,
+                    output_path=eligible_csv,
+                    logger=logger,
+                )
         else:
             eligible_dir.mkdir(parents=True, exist_ok=True)
-            # personnel_dir 来自 fund_etl，由 run_full_pipeline step6 产出；若不存在则 rule f 跳过
             run_prep_eligible_window(
                 work_dir=prep_work_dir,
                 start_date=start_str,
                 end_date=end_str,
-                personnel_dir=fund_etl_dir / "fund_personnel_by_code",
+                personnel_dir=personnel_dir_path,
                 output_path=eligible_csv,
                 logger=logger,
             )

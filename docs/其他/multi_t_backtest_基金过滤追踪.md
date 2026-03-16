@@ -27,7 +27,7 @@ python myanalyser/tools/v2/multi_t_backtest.py \
 
 | 步骤 | 模块/函数 | 输入 | 输出 | 过滤前 | 过滤后 | 过滤条件 |
 |-----|----------|------|------|--------|--------|----------|
-| 1 | prep_eligible_window | fund_purchase.csv | eligible_fund_candidates.csv | 见下 | 见下 | c.1 + a + b + e |
+| 1 | prep_eligible_window | fund_purchase.csv | eligible_fund_candidates.csv | 见下 | 见下 | c.1 + a + b + e + f |
 | 2 | filter_funds_for_next_step | eligible_fund_candidates.csv | filtered_fund_candidates.csv | eligible 数量 | 是否过滤=否 数量 | 规则1-5 |
 | 3 | build_filtered_purchase_csv | eligible + filter | fund_purchase_for_step10_filtered.csv | eligible 行数 | 保留行数 | 是否过滤=否 |
 | 4 | load_fund_nav_data | allowed_codes + max_funds | BacktestData | allowed 数量 | min( allowed, max_funds ) | 仅加载 allowed 内基金，上限 max_funds |
@@ -54,6 +54,9 @@ python myanalyser/tools/v2/multi_t_backtest.py \
 | a | 排除：在 `[成立+2年, 窗口 end_date]` 内机构持仓比例**连续两次**>60% 的基金（不做 start_ts 裁剪） | c.1 后 | `codes -= exclude_a` |
 | b | 仅保留：`end_date` 前**最新一条**规模 > 2 亿的基金（非窗口内任一条） | a 后 | `codes &= include_b` |
 | e | 仅保留：`start_date` 之前成立的基金（有成立日期且成立日 < start_date） | b 后 | `codes &= include_e` |
+| f | 排除：`[end_date-1年, end_date]` 内有人事变动记录的基金（需 personnel_dir） | e 后 | `codes -= exclude_f` |
+
+**缓存**：`eligible_base_{start}_{end}.csv`（不依赖 personnel_dir）、`personnel_excluded_{start}_{end}.csv`，加载时合并为 `eligible_fund_candidates.csv`。
 
 **日志示例**:
 ```
@@ -62,6 +65,7 @@ python myanalyser/tools/v2/multi_t_backtest.py \
 [eligible] a([成立+2年,end_date]内连续两次>60%排除) 后 XXXX，排除 XX
 [eligible] b(end_date前最新规模>2亿) 后 XXXX
 [eligible] e(start_date前成立) 后 XXXX
+[eligible] f([end-1年,end]内人事变动排除) 后 XXXX，排除 XX
 [eligible] 最终结果 XXXX 只
 ```
 

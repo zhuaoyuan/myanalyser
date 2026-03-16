@@ -151,6 +151,52 @@ class TestNormalScenarios(unittest.TestCase):
         self.assertEqual(bundle.name, "low_risk_debt_most_stable")
         self.assertIsInstance(bundle.filter_strategy, MostStableFilterStrategy)
 
+    def test_registry_steady_debt_uses_steady_debt_filter(self) -> None:
+        """正常：steady_debt 使用 SteadyDebtFilterStrategy 且符合稳健型硬约束。"""
+        from myanalyser.src.backtest.filters import SteadyDebtFilterStrategy
+
+        bundle = get_strategy_bundle("steady_debt")
+        self.assertEqual(bundle.name, "steady_debt")
+        self.assertIsInstance(bundle.filter_strategy, SteadyDebtFilterStrategy)
+        self.assertIn("steady_debt", list_strategy_names())
+
+    def test_steady_debt_logic_filter_one(self) -> None:
+        """正常：稳健型 filter_one 硬约束（最大回撤≥-8%、年化≥5%、夏普≥0.5）。"""
+        from myanalyser.src.steady_debt_logic import filter_one
+
+        # 通过：满足全部约束
+        ok, _ = filter_one({
+            "近3年最大回撤率": -0.05,
+            "近3年年化收益率": 0.06,
+            "近3年夏普比率": 0.8,
+        })
+        self.assertFalse(ok, "应通过")
+
+        # 过滤：回撤过深
+        fail, msg = filter_one({
+            "近3年最大回撤率": -0.12,
+            "近3年年化收益率": 0.06,
+            "近3年夏普比率": 0.8,
+        })
+        self.assertTrue(fail)
+        self.assertIn("回撤", msg)
+
+        # 过滤：年化不足
+        fail, _ = filter_one({
+            "近3年最大回撤率": -0.05,
+            "近3年年化收益率": 0.03,
+            "近3年夏普比率": 0.8,
+        })
+        self.assertTrue(fail)
+
+        # 过滤：夏普不足
+        fail, _ = filter_one({
+            "近3年最大回撤率": -0.05,
+            "近3年年化收益率": 0.06,
+            "近3年夏普比率": 0.3,
+        })
+        self.assertTrue(fail)
+
     def test_filter_chain_empty_when_env_not_set(self) -> None:
         """正常：未设置 FUND_BACKTEST_FILTERS 时过滤器链为空。"""
         old = os.environ.pop("FUND_BACKTEST_FILTERS", None)

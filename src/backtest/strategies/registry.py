@@ -5,11 +5,13 @@ from __future__ import annotations
 from .base import StrategyBundle
 from .low_risk_debt import build_bundle as build_low_risk_debt
 from .low_risk_debt import build_bundle_most_stable
+from .steady_debt import build_bundle_steady_debt
 
 
 _STRATEGY_BUILDERS = {
     "low_risk_debt": build_low_risk_debt,
     "low_risk_debt_most_stable": build_bundle_most_stable,
+    "steady_debt": build_bundle_steady_debt,
 }
 
 

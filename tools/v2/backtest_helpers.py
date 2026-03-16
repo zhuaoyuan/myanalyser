@@ -14,8 +14,11 @@ from bisect import bisect_left
 
 import pandas as pd
 
-# A 股口径，与 fund_metrics_core.WindowConfig 一致
-TRADING_DAYS_PER_YEAR = 243
+try:
+    from fund_metrics_core import WindowConfig
+    TRADING_DAYS_PER_YEAR = WindowConfig.trading_days_per_year
+except ImportError:
+    TRADING_DAYS_PER_YEAR = 243  # fallback when src not on path（如独立脚本）
 
 
 def compute_start_from_lookback(
@@ -28,7 +31,7 @@ def compute_start_from_lookback(
     """按交易日历计算 lookback 起始日（1 年 = trading_days_per_year 个交易日）。
 
     Args:
-        as_of_date: T 日，须为交易日
+        as_of_date: T 日，**必须在 trading_days 中**；否则 bisect_left 可能落在下一交易日索引，导致非预期选取
         lookback_years: 回看年数
         trading_days: 交易日历列表（已排序）
         trading_days_per_year: 每年交易日数，默认 243（A 股）

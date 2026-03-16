@@ -2,6 +2,9 @@
 """v2 backtest_helpers 单元测试。
 
 需求来源：20260316 基金过滤逻辑与预期差异调整 - compute_end_extended_str 抽取。
+
+Import 说明：backtest_helpers 位于 tools/v2，需 conftest 将 tools/v2 加入 sys.path 后方可导入，
+故各 test 方法内延迟 import，与 conftest 的路径注入时机一致。
 """
 from __future__ import annotations
 
@@ -84,8 +87,8 @@ class TestComputeStartFromLookback:
 
         # 构造至少 244 个交易日（index 0..243），T 在 index 243
         trading_days = [pd.Timestamp("2023-01-03") + pd.Timedelta(days=i) for i in range(400)]
-        # 剔除周末（简化：每隔 5 天取 1 天作为交易日模拟）
         trading_days = [d for d in trading_days if d.dayofweek < 5][:300]
+        assert len(trading_days) >= 244, f"need 244+ trading days, got {len(trading_days)}"
         as_of = trading_days[243]  # T 日
         result = compute_start_from_lookback(as_of, lookback_years=1, trading_days=trading_days)
         assert result == trading_days[0]  # index 243 - 243 = 0

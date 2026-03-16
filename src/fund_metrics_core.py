@@ -239,8 +239,12 @@ def compute_holding_period_metrics(
     dates: np.ndarray,
     prices: np.ndarray,
     config: WindowConfig | None = None,
-) -> dict[str, float | None]:
+) -> dict[str, float | None | str]:
     """计算持仓期间全样本指标（无 1y/3y 窗口），用于 metrics_holding。
+
+    卡玛比率、溃疡绩效指数：持仓期不足 12 个月（约 243 交易日）时不计算，
+    改为返回说明串（「样本不足，不计算卡玛」/「样本不足，不计算溃疡绩效指数」），
+    避免外推年化与短期实现口径不一致导致指标失真。
 
     Args:
         dates: np.datetime64[D] 数组。
@@ -263,12 +267,20 @@ def compute_holding_period_metrics(
     sharpe = sharpe_ratio(daily_returns, cfg.trading_days_per_year)
     sortino = sortino_ratio(daily_returns, cfg.trading_days_per_year)
     max_dd = max_drawdown(prices)
-    calmar = None
+    calmar: float | str | None = None
     if ann_return is not None and max_dd is not None and max_dd != 0:
-        calmar = ann_return / abs(max_dd)
+        if len(prices) >= cfg.trading_days_per_year:
+            calmar = ann_return / abs(max_dd)
+        else:
+            calmar = "样本不足，不计算卡玛"
     pf = profit_factor(prices)
     ui = ulcer_index(prices)
-    upi = ulcer_performance_index(prices, cfg.trading_days_per_year)
+    upi_raw = ulcer_performance_index(prices, cfg.trading_days_per_year)
+    upi: float | str | None = None
+    if len(prices) >= cfg.trading_days_per_year:
+        upi = upi_raw
+    elif upi_raw is not None:
+        upi = "样本不足，不计算溃疡绩效指数"
     r2 = equity_r_squared(prices)
     std_err = regression_std_error(prices)
     weekly_up = float(np.nanmean(weekly_returns > 0)) if len(weekly_returns) > 0 else None

@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 _root = Path(__file__).resolve().parent.parent
-for subdir in ("src", "tools", "tools/prep"):
+for subdir in ("src", "tools", "tools/prep", "tools/v2"):
     _p = _root / subdir
     if _p.exists() and str(_p) not in sys.path:
         sys.path.insert(0, str(_p))

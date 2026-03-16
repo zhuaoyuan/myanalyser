@@ -486,6 +486,150 @@ class TestPrepEligibleWindow:
         assert out == custom.resolve()
         assert custom.exists()
 
+    def test_rule_a_consecutive_over_60_excluded(self, tmp_path: Path) -> None:
+        """规则a：[成立+2年,end_date] 内机构持仓连续两次>60% 应排除"""
+        work = tmp_path / "work"
+        work.mkdir(parents=True)
+        codes = ["000001"]
+        _write_csv(work / "fund_purchase.csv", pd.DataFrame({"基金代码": codes}))
+        _write_csv(
+            work / "fund_fee_filtered.csv",
+            pd.DataFrame({"基金编码": codes, "类型": ["A类30天"], "申购费率": ["0.1%"], "赎回费率": ["0%"]}),
+        )
+        # 成立 2020-01-01，成立+2年=2022-01-01；2022-06-01 与 2022-09-01 连续两次>60%
+        _write_csv(
+            work / "fund_cyrjg.csv",
+            pd.DataFrame({
+                "基金代码": codes * 3,
+                "日期": ["2022-06-01", "2022-09-01", "2022-12-01"],
+                "机构持有比例": ["65%", "70%", "30%"],
+            }),
+        )
+        _write_csv(
+            work / "fund_gmbd.csv",
+            pd.DataFrame({"基金代码": codes, "日期": ["2024-01-01"], "期末净资产（亿元）": ["5"]}),
+        )
+        _write_csv(
+            work / "fund_overview.csv",
+            pd.DataFrame({"基金代码": codes, "成立日期/规模": ["2020-01-01"]}),
+        )
+        _write_csv(
+            work / "fund_fee_structured.csv",
+            pd.DataFrame({"基金编码": codes, "申购状态": ["开放申购"], "赎回状态": ["开放赎回"]}),
+        )
+        from v2.filters.prep_eligible_window import run
+        out = run(work_dir=work, start_date="2024-01-01", end_date="2024-12-31", output_path=tmp_path / "eligible.csv")
+        result = pd.read_csv(out, dtype=str)
+        assert result.empty
+
+    def test_rule_a_single_over_60_not_excluded(self, tmp_path: Path) -> None:
+        """规则a：仅一次>60% 不满足连续两次，不排除"""
+        work = tmp_path / "work"
+        work.mkdir(parents=True)
+        codes = ["000001"]
+        _write_csv(work / "fund_purchase.csv", pd.DataFrame({"基金代码": codes}))
+        _write_csv(
+            work / "fund_fee_filtered.csv",
+            pd.DataFrame({"基金编码": codes, "类型": ["A类30天"], "申购费率": ["0.1%"], "赎回费率": ["0%"]}),
+        )
+        # 成立 2020-01-01；仅 2022-06-01 一次>60%，下次 2022-09-01 为 30%
+        _write_csv(
+            work / "fund_cyrjg.csv",
+            pd.DataFrame({
+                "基金代码": codes * 2,
+                "日期": ["2022-06-01", "2022-09-01"],
+                "机构持有比例": ["65%", "30%"],
+            }),
+        )
+        _write_csv(
+            work / "fund_gmbd.csv",
+            pd.DataFrame({"基金代码": codes, "日期": ["2024-01-01"], "期末净资产（亿元）": ["5"]}),
+        )
+        _write_csv(
+            work / "fund_overview.csv",
+            pd.DataFrame({"基金代码": codes, "成立日期/规模": ["2020-01-01"]}),
+        )
+        _write_csv(
+            work / "fund_fee_structured.csv",
+            pd.DataFrame({"基金编码": codes, "申购状态": ["开放申购"], "赎回状态": ["开放赎回"]}),
+        )
+        from v2.filters.prep_eligible_window import run
+        out = run(work_dir=work, start_date="2024-01-01", end_date="2024-12-31", output_path=tmp_path / "eligible.csv")
+        result = pd.read_csv(out, dtype=str)
+        assert len(result) >= 1
+
+    def test_rule_b_latest_over_2e_retained(self, tmp_path: Path) -> None:
+        """规则b：end_date 前最新一条规模>2亿 应保留"""
+        work = tmp_path / "work"
+        work.mkdir(parents=True)
+        codes = ["000001"]
+        _write_csv(work / "fund_purchase.csv", pd.DataFrame({"基金代码": codes}))
+        _write_csv(
+            work / "fund_fee_filtered.csv",
+            pd.DataFrame({"基金编码": codes, "类型": ["A类30天"], "申购费率": ["0.1%"], "赎回费率": ["0%"]}),
+        )
+        _write_csv(
+            work / "fund_cyrjg.csv",
+            pd.DataFrame({"基金代码": codes, "日期": ["2024-01-01"], "机构持有比例": ["30%"]}),
+        )
+        # 2024-06-01 规模 1 亿，2024-12-15 规模 3 亿；最新>2亿，应保留
+        _write_csv(
+            work / "fund_gmbd.csv",
+            pd.DataFrame({
+                "基金代码": codes * 2,
+                "日期": ["2024-06-01", "2024-12-15"],
+                "期末净资产（亿元）": ["1", "3"],
+            }),
+        )
+        _write_csv(
+            work / "fund_overview.csv",
+            pd.DataFrame({"基金代码": codes, "成立日期/规模": ["2010-01-01"]}),
+        )
+        _write_csv(
+            work / "fund_fee_structured.csv",
+            pd.DataFrame({"基金编码": codes, "申购状态": ["开放申购"], "赎回状态": ["开放赎回"]}),
+        )
+        from v2.filters.prep_eligible_window import run
+        out = run(work_dir=work, start_date="2024-01-01", end_date="2024-12-31", output_path=tmp_path / "eligible.csv")
+        result = pd.read_csv(out, dtype=str)
+        assert len(result) >= 1
+
+    def test_rule_b_same_date_multiple_rows_takes_last(self, tmp_path: Path) -> None:
+        """规则b：同日期多行时 groupby.last 取最后一条"""
+        work = tmp_path / "work"
+        work.mkdir(parents=True)
+        codes = ["000001"]
+        _write_csv(work / "fund_purchase.csv", pd.DataFrame({"基金代码": codes}))
+        _write_csv(
+            work / "fund_fee_filtered.csv",
+            pd.DataFrame({"基金编码": codes, "类型": ["A类30天"], "申购费率": ["0.1%"], "赎回费率": ["0%"]}),
+        )
+        _write_csv(
+            work / "fund_cyrjg.csv",
+            pd.DataFrame({"基金代码": codes, "日期": ["2024-12-15"], "机构持有比例": ["30%"]}),
+        )
+        # 同日期 2024-12-15 两行：3亿、1亿；last 取 1亿，应排除
+        _write_csv(
+            work / "fund_gmbd.csv",
+            pd.DataFrame({
+                "基金代码": codes * 2,
+                "日期": ["2024-12-15", "2024-12-15"],
+                "期末净资产（亿元）": ["3", "1"],
+            }),
+        )
+        _write_csv(
+            work / "fund_overview.csv",
+            pd.DataFrame({"基金代码": codes, "成立日期/规模": ["2010-01-01"]}),
+        )
+        _write_csv(
+            work / "fund_fee_structured.csv",
+            pd.DataFrame({"基金编码": codes, "申购状态": ["开放申购"], "赎回状态": ["开放赎回"]}),
+        )
+        from v2.filters.prep_eligible_window import run
+        out = run(work_dir=work, start_date="2024-01-01", end_date="2024-12-31", output_path=tmp_path / "eligible.csv")
+        result = pd.read_csv(out, dtype=str)
+        assert result.empty
+
     def test_rule_b_latest_scale_before_end_date(self, tmp_path: Path) -> None:
         """规则b：仅用 end_date 前最新一条规模判定；窗口内曾>2亿但最新<=2亿应排除"""
         work = tmp_path / "work"

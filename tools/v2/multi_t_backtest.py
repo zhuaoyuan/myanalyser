@@ -444,6 +444,7 @@ def main() -> None:
             )
 
         filter_csv = filter_dir / "filtered_fund_candidates.csv"
+        # filter 缓存：filter_dir 含 ruleset_version，规则变更时 bump ruleset_version 即可使缓存失效（方案 C）
         if filter_csv.exists():
             logger.info("[filter] cache hit: %s", filter_csv)
         else:

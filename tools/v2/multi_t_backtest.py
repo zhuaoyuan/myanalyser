@@ -33,7 +33,6 @@ from __future__ import annotations
 
 
 import argparse
-import hashlib
 import logging
 import os
 import sys
@@ -235,12 +234,6 @@ def _ensure_integrity_cache(
     )
 
 
-def _parse_fund_types(raw: str | None) -> list[str]:
-    """解析逗号分隔的基金类型列表，空或 None 返回 []。"""
-    s = str(raw).strip() if raw is not None else ""
-    return [] if not s else [x.strip() for x in s.split(",") if x.strip()]
-
-
 def _build_purchase_csv_for_filter(
     eligible_csv: Path,
     filter_dir: Path,
@@ -404,15 +397,22 @@ def main() -> None:
     parser.add_argument("--initial-cash", type=float, default=100_000)
     parser.add_argument(
         "--fund-types",
+        nargs="*",
         default=None,
-        help="逗号分隔的基金类型，用于从 prep-work-dir/fund_fee_filtered.csv 筛选基金。"
-        "可选值见该文件的 类型 列，如 A类730天,C类30天,A类30天",
+        help="基金类型列表，从 prep-work-dir/fund_fee_filtered.csv 筛选。"
+        "可空格或逗号分隔，如 --fund-types A类730天 C类30天",
     )
     args = parser.parse_args()
 
     run_id = args.run_id
     ruleset_version = args.ruleset_version
-    fund_types = _parse_fund_types(args.fund_types)
+    # 支持空格分隔与逗号分隔，如 ["A类730天", "C类30天"] 或 ["A类730天,C类30天"] -> ["A类730天", "C类30天"]
+    fund_types = [
+        x.strip()
+        for v in (args.fund_types or [])
+        for x in str(v).split(",")
+        if x.strip()
+    ]
 
     workspace_root = project_root()
     data_root = workspace_root / "data" / "versions" / run_id
@@ -455,13 +455,10 @@ def main() -> None:
 
         cache_key = f"{start_str}_{end_str}"
         cache_key_filter = f"{start_str}_{end_extended_str}"
-        fund_types_suffix = ""
-        if fund_types:
-            fund_types_suffix = "_" + hashlib.md5(",".join(sorted(fund_types)).encode()).hexdigest()[:8]
         compare_dir = _cache_dir(cache_root, "compare", ruleset_version, cache_key_filter)
         integrity_dir = _cache_dir(cache_root, "integrity", ruleset_version, cache_key_filter)
         eligible_dir = _cache_dir(cache_root, "prep_eligible", ruleset_version, cache_key)
-        filter_dir = _cache_dir(cache_root, "filter", ruleset_version, cache_key_filter + fund_types_suffix)
+        filter_dir = _cache_dir(cache_root, "filter", ruleset_version, cache_key_filter)
         scoreboard_dir = _cache_dir(cache_root, "scoreboard", ruleset_version, as_of_str, cache_key)
 
         logger.info("[T=%s] start window %s -> %s, filter/compare/integrity 延伸至 %s", as_of_str, start_str, end_str, end_extended_str)
@@ -534,8 +531,22 @@ def main() -> None:
         )
 
         filter_csv = filter_dir / "filtered_fund_candidates.csv"
-        # filter 缓存：filter_dir 含 ruleset_version，规则变更时 bump ruleset_version 即可使缓存失效（方案 C）
-        if filter_csv.exists():
+        # fund_types 非空时 filter 不缓存（便于调整筛选条件）；否则使用 ruleset_version 区分缓存
+        if fund_types:
+            filter_dir.mkdir(parents=True, exist_ok=True)
+            filter_df = filter_funds_for_next_step(
+                purchase_csv=purchase_csv_for_filter,
+                overview_csv=fund_etl_dir / "fund_overview.csv",
+                nav_dir=fund_etl_dir / "fund_nav_by_code",
+                adjusted_nav_dir=fund_etl_dir / "fund_adjusted_nav_by_code",
+                compare_details_dir=compare_details,
+                integrity_details_dir=integrity_details,
+                start_date=start_str,
+                end_date=end_extended_str,
+            )
+            filter_df.to_csv(filter_csv, index=False, encoding="utf-8-sig")
+            logger.info("[filter] write %s (fund-types 指定，未使用缓存)", filter_csv)
+        elif filter_csv.exists():
             logger.info("[filter] cache hit: %s", filter_csv)
         else:
             filter_dir.mkdir(parents=True, exist_ok=True)

@@ -123,3 +123,135 @@ class TestWriteMultiSummaryAgg:
             assert not wr_row.empty
             win_rate = float(wr_row["年化收益率"].iloc[0])
             assert abs(win_rate - 2 / 3) < 1e-6
+
+    def test_empty_string_and_non_numeric_treated_as_nan(self) -> None:
+        """空串、非数值按 NaN 处理，不参与 mean/std 等计算"""
+        summary_df = pd.DataFrame({
+            "as_of_date": ["2023-01-01", "2023-07-01", "2024-01-02"],
+            "年化收益率": ["0.05", "", "invalid"],  # 第2行空串、第3行非数值
+        })
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            _write_multi_summary_agg(summary_df, out)
+            agg_df = pd.read_csv(out / "multi_summary_agg.csv", encoding="utf-8-sig")
+            # 仅第1行 0.05 有效，mean=0.05, count=1, std=空
+            mean_row = agg_df[agg_df["stat_type"] == "mean"]
+            assert abs(float(mean_row["年化收益率"].iloc[0]) - 0.05) < 1e-6
+            count_row = agg_df[agg_df["stat_type"] == "count"]
+            assert int(count_row["年化收益率"].iloc[0]) == 1
+            std_row = agg_df[agg_df["stat_type"] == "std"]
+            std_val = std_row["年化收益率"].iloc[0]
+            # CSV 写入空串，读回时可能为 NaN（pandas 推断列类型）
+            assert std_val == "" or (isinstance(std_val, float) and (pd.isna(std_val) or std_val == 0))
+
+    def test_column_all_nan_agg_empty(self) -> None:
+        """某指标列全为 NaN 时，该列 agg 统计为空"""
+        summary_df = pd.DataFrame({
+            "as_of_date": ["2023-01-01", "2023-07-01"],
+            "年化收益率": ["0.05", "0.08"],
+            "最大回撤率": [float("nan"), float("nan")],  # 全 NaN
+        })
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            _write_multi_summary_agg(summary_df, out)
+            agg_df = pd.read_csv(out / "multi_summary_agg.csv", encoding="utf-8-sig")
+            mean_row = agg_df[agg_df["stat_type"] == "mean"]
+            assert mean_row["年化收益率"].iloc[0] != "" and mean_row["年化收益率"].iloc[0] != "nan"
+            # 最大回撤率全 NaN，mean 应为空
+            val = mean_row["最大回撤率"].iloc[0]
+            assert val == "" or (isinstance(val, float) and pd.isna(val))
+
+    def test_no_metric_columns_skips_agg(self) -> None:
+        """summary 仅有 as_of_date 等非 metric 列时，不生成 agg 文件"""
+        summary_df = pd.DataFrame({
+            "as_of_date": ["2023-01-01", "2023-07-01"],
+            "filter_start": ["2020-01-01"] * 2,
+            "allowed_funds": [100, 105],
+        })
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            _write_multi_summary_agg(summary_df, out)
+            assert not (out / "multi_summary_agg.csv").exists()
+
+    def test_win_rate_all_positive(self) -> None:
+        """win_rate 全正时结果为 1.0"""
+        summary_df = pd.DataFrame({
+            "as_of_date": ["2023-01-01", "2023-07-01"],
+            "年化收益率": ["0.05", "0.08"],
+        })
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            _write_multi_summary_agg(summary_df, out)
+            agg_df = pd.read_csv(out / "multi_summary_agg.csv", encoding="utf-8-sig")
+            wr_row = agg_df[agg_df["stat_type"] == "win_rate"]
+            assert abs(float(wr_row["年化收益率"].iloc[0]) - 1.0) < 1e-6
+
+    def test_win_rate_all_negative(self) -> None:
+        """win_rate 全负时结果为 0.0"""
+        summary_df = pd.DataFrame({
+            "as_of_date": ["2023-01-01", "2023-07-01"],
+            "年化收益率": ["-0.05", "-0.08"],
+        })
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            _write_multi_summary_agg(summary_df, out)
+            agg_df = pd.read_csv(out / "multi_summary_agg.csv", encoding="utf-8-sig")
+            wr_row = agg_df[agg_df["stat_type"] == "win_rate"]
+            assert abs(float(wr_row["年化收益率"].iloc[0]) - 0.0) < 1e-6
+
+    def test_win_rate_with_zero_boundary(self) -> None:
+        """win_rate 边界：年化收益率=0 不计入正收益"""
+        summary_df = pd.DataFrame({
+            "as_of_date": ["2023-01-01", "2023-07-01", "2024-01-02"],
+            "年化收益率": ["0.05", "0", "-0.02"],  # 1 正 1 零 1 负
+        })
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            _write_multi_summary_agg(summary_df, out)
+            agg_df = pd.read_csv(out / "multi_summary_agg.csv", encoding="utf-8-sig")
+            wr_row = agg_df[agg_df["stat_type"] == "win_rate"]
+            # (s > 0).sum() = 1, n = 3 -> 1/3
+            assert abs(float(wr_row["年化收益率"].iloc[0]) - 1 / 3) < 1e-6
+
+    def test_extreme_values_min_max(self) -> None:
+        """极大值、极小值正确计入 min/max"""
+        summary_df = pd.DataFrame({
+            "as_of_date": ["2023-01-01", "2023-07-01", "2024-01-02"],
+            "年化收益率": ["1e10", "0", "-1e10"],
+        })
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            _write_multi_summary_agg(summary_df, out)
+            agg_df = pd.read_csv(out / "multi_summary_agg.csv", encoding="utf-8-sig")
+            min_row = agg_df[agg_df["stat_type"] == "min"]
+            max_row = agg_df[agg_df["stat_type"] == "max"]
+            assert abs(float(min_row["年化收益率"].iloc[0]) - (-1e10)) < 1e-6
+            assert abs(float(max_row["年化收益率"].iloc[0]) - 1e10) < 1e-6
+
+    def test_stat_type_and_column_order(self) -> None:
+        """stat_type 与列顺序符合需求"""
+        summary_df = pd.DataFrame({
+            "as_of_date": ["2023-01-01", "2023-07-01"],
+            "年化收益率": ["0.05", "0.08"],
+        })
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            _write_multi_summary_agg(summary_df, out)
+            agg_df = pd.read_csv(out / "multi_summary_agg.csv", encoding="utf-8-sig")
+            expected_stats = ["mean", "median", "std", "min", "max", "p25", "p75", "count", "win_rate", "t_count"]
+            actual = agg_df["stat_type"].tolist()
+            assert actual == expected_stats
+            assert agg_df.columns[0] == "stat_type"
+
+    def test_output_root_must_exist(self) -> None:
+        """output_root 必须存在（非 mkdir 场景下会失败）"""
+        summary_df = pd.DataFrame({
+            "as_of_date": ["2023-01-01"],
+            "年化收益率": ["0.05"],
+        })
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "nonexistent_subdir"
+            assert not out.exists()
+            with pytest.raises((FileNotFoundError, OSError)):
+                _write_multi_summary_agg(summary_df, out)
+

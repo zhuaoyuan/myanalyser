@@ -76,7 +76,24 @@ t_count,3,,,...
 
 ## 4. 验收证据
 
-### 4.1 单测
+### 4.1 单测场景清单
+
+| 类别 | 场景 | 测试 ID |
+|------|------|---------|
+| **正常场景** | 汇总指标与 df.describe() 一致（容差 1e-6） | test_agg_values_match_describe_tolerance_1e6 |
+| | t_count 等于 multi_summary 行数 | test_t_count_equals_summary_rows |
+| | win_rate = 年化收益率 > 0 的比例 | test_win_rate_annual_return |
+| | win_rate 全正 → 1.0 | test_win_rate_all_positive |
+| | win_rate 全负 → 0.0 | test_win_rate_all_negative |
+| | 极大值/极小值正确计入 min/max | test_extreme_values_min_max |
+| | stat_type 与列顺序符合需求 | test_stat_type_and_column_order |
+| **边界条件** | 空 summary_df 不生成文件 | test_empty_summary_skips_agg |
+| | 单 T 时 std 为空/NaN | test_single_t_std_empty_or_nan |
+| | 空串/非数值按 NaN 处理 | test_empty_string_and_non_numeric_treated_as_nan |
+| | 某列全 NaN 时 agg 为空 | test_column_all_nan_agg_empty |
+| | 年化收益率=0 不计入正收益 | test_win_rate_with_zero_boundary |
+| **异常场景** | 无 metric 列时不生成文件 | test_no_metric_columns_skips_agg |
+| | output_root 不存在时抛出异常 | test_output_root_must_exist |
 
 ```bash
 cd /Users/zhuaoyuan/cursor-workspace/finance
@@ -85,7 +102,18 @@ cd myanalyser
 pytest tests/test_multi_summary_agg.py -v
 ```
 
-结果：5 passed（含 agg 与 df.describe 一致性、t_count、空 summary 跳过、单 T std、win_rate）
+### 4.2 测试总结快照（2026-03-16）
+
+**Summary:**
+- Total Tests: 14
+- Passed: 14
+- Failed: 0
+- Coverage: _write_multi_summary_agg 核心逻辑已覆盖（multi_t_backtest.py 全文件 26%）
+
+**Failures Detail:**
+| Test ID | Scenario | Input | Expected | Actual | Traceback/Error |
+|---------|----------|-------|----------|--------|-----------------|
+| （无失败） | - | - | - | - | - |
 
 ### 4.2 multi_t_backtest 运行
 

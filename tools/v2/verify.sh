@@ -73,10 +73,10 @@
 # - 断言 `fund_purchase.csv` 存在且有行。
 # - 业务意义：确认上游数据接口可用、字段没明显漂移。
 
-# ### Step 5/10：抽样 101 只基金（Top100 + 163402）
+# ### Step 5/10：抽样 21 只基金（top20 + 163402）
 
 # - 从 step1 输出中抽样：
-#   - 先取不含 `163402` 的前 100
+#   - 先取不含 `163402` 的前 20
 #   - 再补 1 条 `163402`（若不存在则构造空白占位）
 # - 覆盖回写 `fund_purchase.csv`，强制后续 ETL 只跑样本集。
 # - 业务意义：控制验收时长，同时保留一个指定目标基金用于回归对比。
@@ -159,7 +159,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# tools/v2 -> tools -> myanalyser
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 WORKSPACE_ROOT="$(cd "${PROJECT_ROOT}/.." && pwd)"
 DB_INFRA_DIR="${WORKSPACE_ROOT}/fund_db_infra"
 
@@ -183,7 +184,10 @@ fi
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)_verify_e2e}"
 DATA_VERSION="${DATA_VERSION:-${RUN_ID}_db}"
 MYSQL_PASSWORD="${MYSQL_PASSWORD:-your_strong_password}"
-# 生产环境请显式设置 MYSQL_PASSWORD，避免使用默认值。
+# 生产环境请显式设置 MYSQL_PASSWORD。非 CI 且为默认值时仅告警（本地 Docker 可用默认值）。
+if [[ "${MYSQL_PASSWORD}" == "your_strong_password" ]] && [[ -z "${CI:-}" ]]; then
+  echo "[verify] WARNING: MYSQL_PASSWORD is default; for production set it explicitly"
+fi
 VERIFY_ROOT="${PROJECT_ROOT}/data/versions/${RUN_ID}"
 FUND_ETL_DIR="${VERIFY_ROOT}/fund_etl"
 LOGS_DIR="${VERIFY_ROOT}/logs"
@@ -222,6 +226,7 @@ assert_dir_exists() {
   fi
 }
 
+# assert_csv_has_rows / assert_dir_has_csv：失败时 Python 使用 SystemExit(1)=文件/目录不存在，SystemExit(2)=存在但为空。shell 无法区分，排查请查看 Python 栈。
 assert_csv_has_rows() {
   local path="$1"
   "${PYTHON_BIN}" - <<'PY' "${path}"
@@ -538,8 +543,11 @@ assert_csv_has_rows "${SUMMARY_CSV}"
 finish_step "success"
 
 start_step "step9_compare_returns"
-"${PYTHON_BIN}" src/compare_adjusted_nav_and_cum_return.py \
+# v2 窗口化 compare，与 integrity 同区间 [2025-01-01, 2025-12-31] 双闭
+"${PYTHON_BIN}" src/v2/compare/compare_adjusted_nav_and_cum_return_window.py \
   --base-dir "${FUND_ETL_DIR}" \
+  --start-date 2025-01-01 \
+  --end-date 2025-12-31 \
   --output-dir "${ARTIFACTS_DIR}/fund_return_compare" \
   --error-log "${LOGS_DIR}/compare_adjusted_nav_cum_return_errors.jsonl"
 assert_csv_has_rows "${ARTIFACTS_DIR}/fund_return_compare/summary.csv"
@@ -547,12 +555,14 @@ assert_dir_exists "${ARTIFACTS_DIR}/fund_return_compare/details"
 finish_step "success"
 
 start_step "step9_5_filter_and_filtered_purchase"
-"${PYTHON_BIN}" src/filter_funds_for_next_step.py \
+# v2 支持 --end-date，与 integrity/compare 同区间 [start, 2025-12-31] 双闭，避免 look-ahead
+"${PYTHON_BIN}" src/v2/filters/filter_funds_for_next_step.py \
   --base-dir "${FUND_ETL_DIR}" \
   --purchase-csv "${FUND_PURCHASE_EFFECTIVE_CSV}" \
   --compare-details-dir "${ARTIFACTS_DIR}/fund_return_compare/details" \
   --integrity-details-dir "${ARTIFACTS_DIR}/trade_day_integrity_reports/details_2025-01-01_2025-12-31" \
   --start-date "${FILTER_START_DATE}" \
+  --end-date 2025-12-31 \
   --max-abs-deviation "${FILTER_MAX_ABS_DEVIATION}" \
   --output-csv "${FILTER_RESULT_CSV}"
 assert_csv_has_rows "${FILTER_RESULT_CSV}"
@@ -647,8 +657,7 @@ bash tools/run_filter_and_score.sh \
   -i "${SCOREBOARD_DIR}/fund_scoreboard_${DATA_VERSION}.csv" \
   -w "${FILTER_SCORE_WORK_DIR}" \
   -f src/filter_score/filters/most_stable.py \
-  -s src/filter_score/scores/low_risk_debt.py \
-  --progress-interval 0
+  -s src/filter_score/scores/low_risk_debt.py
 assert_csv_has_rows "${FILTER_SCORE_WORK_DIR}/filter_result.csv"
 assert_csv_has_rows "${FILTER_SCORE_WORK_DIR}/scored_result.csv"
 finish_step "success"

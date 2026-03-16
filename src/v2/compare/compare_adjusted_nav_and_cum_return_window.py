@@ -13,6 +13,8 @@ import pandas as pd
 
 from validators.validate_pipeline_artifacts import validate_stage_or_raise
 
+from v2.utils import safe_fund_code
+
 SUMMARY_COLUMNS = [
     "基金代码",
     "数据是否缺失",
@@ -41,18 +43,11 @@ DETAIL_COLUMNS = [
 MISSING_STAGE = "compare_adjusted_nav_cum_return_window"
 
 
-def _safe_code(value: object) -> str:
-    s = str(value).strip()
-    if not s or not s.isdigit() or len(s) > 6:
-        return ""
-    return s.zfill(6)
-
-
 def _append_error_log(log_path: Path, code: str, error: str) -> None:
     record = {
         "ts": datetime.now().isoformat(timespec="seconds"),
         "stage": MISSING_STAGE,
-        "code": _safe_code(code),
+        "code": safe_fund_code(code),
         "error": error,
     }
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -119,7 +114,7 @@ def _calc_remote_return(start_val: float, end_val: float) -> float | None:
 
 def _empty_summary_row(code: str, missing: str) -> dict[str, object]:
     return {
-        "基金代码": _safe_code(code),
+        "基金代码": safe_fund_code(code),
         "数据是否缺失": missing,
         "参与比对收益率的天数": 0,
         "因日期数据缺失跳过的天数": 0,
@@ -162,8 +157,8 @@ def compare_adjusted_nav_and_cum_return_window(
 
     adjusted_files = {path.stem: path for path in adjusted_dir.glob("*.csv")}
     cum_files = {path.stem: path for path in cum_return_dir.glob("*.csv")}
-    adjusted_codes = {_safe_code(code) for code in adjusted_files}
-    cum_codes = {_safe_code(code) for code in cum_files}
+    adjusted_codes = {safe_fund_code(code) for code in adjusted_files}
+    cum_codes = {safe_fund_code(code) for code in cum_files}
     all_codes = sorted(adjusted_codes | cum_codes)
 
     summary_rows: list[dict[str, object]] = []
@@ -222,10 +217,10 @@ def compare_adjusted_nav_and_cum_return_window(
         details: list[dict[str, object]] = []
         bucket_count = {"<1%": 0, "1%～2%": 0, "2%～5%": 0, "5%～10%": 0, "10%以上": 0}
 
-        for start_date_ts in start_dates:
-            local_start = float(adjusted_series.loc[start_date_ts])
+        for period_start_ts in start_dates:
+            local_start = float(adjusted_series.loc[period_start_ts])
             local_end = float(adjusted_series.loc[window_end])
-            remote_start = float(cum_series.loc[start_date_ts])
+            remote_start = float(cum_series.loc[period_start_ts])
             remote_end = float(cum_series.loc[window_end])
 
             local_return = _calc_local_return(local_start, local_end)
@@ -241,7 +236,7 @@ def compare_adjusted_nav_and_cum_return_window(
 
             details.append(
                 {
-                    "期初日期": start_date_ts.strftime("%Y-%m-%d"),
+                    "期初日期": period_start_ts.strftime("%Y-%m-%d"),  # noqa: RUF001
                     "期末日期": window_end.strftime("%Y-%m-%d"),
                     "本地期初值": _format_num(local_start),
                     "本地期末值": _format_num(local_end),

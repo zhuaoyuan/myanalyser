@@ -24,6 +24,8 @@ import pandas as pd
 
 from project_paths import project_root
 
+from v2.utils import safe_fund_code
+
 _TRANSFORMS_DIR = Path(__file__).resolve().parent
 
 _MYANALYSER = project_root()
@@ -35,23 +37,6 @@ if str(_PREP_TOOLS) not in sys.path:
     sys.path.insert(0, str(_PREP_TOOLS))
 
 _MAX_PERSONNEL_WORKERS = 16
-
-
-def _safe_code(v: object) -> str:
-    if v is None:
-        return ""
-    if isinstance(v, int):
-        return f"{v:06d}"
-    if isinstance(v, float) and v.is_integer():
-        return f"{int(v):06d}"
-    s = str(v).strip()
-    if not s or s == "---":
-        return ""
-    if not s.isdigit():
-        return ""
-    if len(s) > 6:
-        return ""
-    return s.zfill(6)
 
 
 def _parse_date(text: object) -> pd.Timestamp | None:
@@ -154,7 +139,7 @@ def compute_personnel_excluded_and_merge(
     """当 base 缓存存在、personnel 缓存不存在时，仅计算 personnel 并合并，避免重复跑 c.1+a+b+e。"""
     log = logger or logging.getLogger(__name__)
     base_df = pd.read_csv(base_path, dtype=str, encoding="utf-8-sig")
-    base_codes = set(base_df["基金代码"].map(_safe_code)) - {""}
+    base_codes = set(base_df["基金代码"].map(safe_fund_code)) - {""}
     end_ts = pd.to_datetime(end_date)
     one_year = pd.DateOffset(years=1)
     personnel_start = end_ts - one_year
@@ -166,7 +151,7 @@ def compute_personnel_excluded_and_merge(
     )
     log.info("[eligible] f 计算 personnel_excluded 并缓存: %d", len(personnel_excluded))
     final_codes = base_codes - personnel_excluded
-    result = base_df[base_df["基金代码"].map(_safe_code).isin(final_codes)].copy()
+    result = base_df[base_df["基金代码"].map(safe_fund_code).isin(final_codes)].copy()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     result.to_csv(output_path, index=False, encoding="utf-8-sig")
     log.info("[eligible] 合并 base - personnel_excluded，写入 %s", output_path)
@@ -229,13 +214,13 @@ def run(
     _ensure_fee_filtered(fee_structured_csv, fee_filtered_csv, log)
 
     purchase_df = pd.read_csv(purchase_csv, dtype=str, encoding="utf-8-sig")
-    codes = {c for c in purchase_df["基金代码"].dropna().map(_safe_code).tolist() if c}
+    codes = {c for c in purchase_df["基金代码"].dropna().map(safe_fund_code).tolist() if c}
     log.info("[eligible] 原始候选 %d 只", len(codes))
 
     # c.1: 必须在 fee 分类结果中存在
     c1_df = pd.read_csv(fee_filtered_csv, dtype=str, encoding="utf-8-sig")
     code_col = "基金编码" if "基金编码" in c1_df.columns else "基金代码"
-    c1_codes = {c for c in c1_df[code_col].dropna().map(_safe_code).tolist() if c}
+    c1_codes = {c for c in c1_df[code_col].dropna().map(safe_fund_code).tolist() if c}
     codes &= c1_codes
     log.info("[eligible] c.1 后 %d", len(codes))
 
@@ -246,7 +231,7 @@ def run(
     col = "成立日期/规模" if "成立日期/规模" in e_df.columns else "成立日期"
     if col in e_df.columns:
         e_df = e_df.copy()
-        e_df["_code"] = e_df["基金代码"].map(_safe_code)
+        e_df["_code"] = e_df["基金代码"].map(safe_fund_code)
         e_df["_inc"] = e_df[col].map(_parse_date)
         inc_ok = e_df[e_df["_inc"].notna() & (e_df["_code"] != "")]
         inc_ok = inc_ok.sort_values("_inc", na_position="last")
@@ -263,7 +248,7 @@ def run(
     a_df[date_col] = pd.to_datetime(a_df[date_col], errors="coerce")
     a_df = a_df[a_df[date_col] <= end_ts]
     a_df["_pct"] = a_df["机构持有比例"].map(_parse_pct)
-    a_df["_code"] = a_df["基金代码"].map(_safe_code)
+    a_df["_code"] = a_df["基金代码"].map(safe_fund_code)
     a_df = a_df[a_df["_code"] != ""]
 
     exclude_a: set[str] = set()
@@ -286,11 +271,11 @@ def run(
     scale_col = "期末净资产（亿元）"
     if scale_col in b_df.columns:
         b_df["_scale"] = pd.to_numeric(b_df[scale_col], errors="coerce")
-        b_df["_code"] = b_df["基金代码"].map(_safe_code)
+        b_df["_code"] = b_df["基金代码"].map(safe_fund_code)
         b_df = b_df[b_df["_code"] != ""].dropna(subset=["_scale"])
         # 同日期多行时 groupby.last 取最后一条，避免 idxmax 仅取首条
         latest = b_df.sort_values("日期").groupby("_code", as_index=False).last()
-        include_b = set(latest[latest["_scale"] > 2]["_code"].tolist())  # _code 已由 _safe_code 规范化
+        include_b = set(latest[latest["_scale"] > 2]["_code"].tolist())  # _code 已由 safe_fund_code 规范化
         codes &= include_b
         log.info("[eligible] b(end_date前最新规模>2亿) 后 %d", len(codes))
     else:
@@ -315,7 +300,7 @@ def run(
         base_df = pd.read_csv(base_path, dtype=str, encoding="utf-8-sig")
         log.info("[eligible] base cache hit: %s", base_path)
     else:
-        base_df = purchase_df[purchase_df["基金代码"].map(_safe_code).isin(base_codes)].copy()
+        base_df = purchase_df[purchase_df["基金代码"].map(safe_fund_code).isin(base_codes)].copy()
         base_df.to_csv(base_path, index=False, encoding="utf-8-sig")
         log.info("[eligible] base cache write: %s", base_path)
 
@@ -325,12 +310,12 @@ def run(
         if personnel_path.exists():
             excl_df = pd.read_csv(personnel_path, dtype=str, encoding="utf-8-sig")
             code_col = "基金编码" if "基金编码" in excl_df.columns else "基金代码"
-            personnel_excluded = {_safe_code(c) for c in excl_df[code_col].dropna().tolist()}
+            personnel_excluded = {safe_fund_code(c) for c in excl_df[code_col].dropna().tolist()}
             log.info("[eligible] f personnel cache hit: %s，排除 %d", personnel_path, len(personnel_excluded))
         else:
             personnel_start = end_ts - pd.DateOffset(years=1)
             personnel_excluded = _compute_personnel_excluded(
-                set(base_df["基金代码"].map(_safe_code)), personnel_dir, personnel_start, end_ts
+                set(base_df["基金代码"].map(safe_fund_code)), personnel_dir, personnel_start, end_ts
             )
             pd.DataFrame({"基金编码": sorted(personnel_excluded)}).to_csv(
                 personnel_path, index=False, encoding="utf-8-sig"
@@ -340,8 +325,8 @@ def run(
         if personnel_dir is not None:
             log.warning("[eligible] f 人事目录不存在或非目录，跳过: %s", personnel_dir)
 
-    final_codes = set(base_df["基金代码"].map(_safe_code)) - personnel_excluded
-    result = base_df[base_df["基金代码"].map(_safe_code).isin(final_codes)].copy()
+    final_codes = set(base_df["基金代码"].map(safe_fund_code)) - personnel_excluded
+    result = base_df[base_df["基金代码"].map(safe_fund_code).isin(final_codes)].copy()
     log.info("[eligible] 最终结果 %d 只 (base %d - personnel_excluded %d)", len(result), len(base_codes), len(personnel_excluded))
 
     result.to_csv(output_path, index=False, encoding="utf-8-sig")
@@ -371,7 +356,7 @@ def main() -> int:
             logger=logger,
         )
         return 0
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001  # CLI 需统一返回码 0/1，捕获所有异常避免仅输出 traceback
         logger.exception("%s", e)
         return 1
 

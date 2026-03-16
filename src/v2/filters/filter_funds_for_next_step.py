@@ -20,18 +20,16 @@ import pandas as pd
 
 from validators.validate_pipeline_artifacts import validate_stage_or_raise
 
+from v2.utils import safe_fund_code
+
 OUTPUT_COLUMNS = ["基金编码", "是否过滤", "过滤原因"]
-
-
-def _safe_code(value: object) -> str:
-    return str(value).strip().zfill(6)
 
 
 def _load_purchase_codes(purchase_csv: Path) -> list[str]:
     purchase_df = pd.read_csv(purchase_csv, dtype={"基金代码": str}, encoding="utf-8-sig")
     if "基金代码" not in purchase_df.columns:
         raise ValueError(f"fund_purchase.csv 缺少 基金代码 列: {purchase_csv}")
-    codes = [_safe_code(code) for code in purchase_df["基金代码"].dropna().tolist()]
+    codes = [safe_fund_code(code) for code in purchase_df["基金代码"].dropna().tolist()]
     return list(dict.fromkeys(codes))
 
 
@@ -41,7 +39,7 @@ def _load_overview_codes(overview_csv: Path) -> set[str]:
     overview_df = pd.read_csv(overview_csv, dtype={"基金代码": str}, encoding="utf-8-sig")
     if "基金代码" not in overview_df.columns:
         return set()
-    return {_safe_code(code) for code in overview_df["基金代码"].dropna().tolist()}
+    return {safe_fund_code(code) for code in overview_df["基金代码"].dropna().tolist()}
 
 
 def _load_code_stems_from_dir(csv_dir: Path) -> set[str]:

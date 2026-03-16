@@ -255,7 +255,11 @@ def run(
     delay: float = 0.3,
     logger: logging.Logger | None = None,
 ) -> None:
-    """执行 v2 预备数据宽存流程（仅 L1）。"""
+    """执行 v2 预备数据宽存流程（仅 L1）。
+
+    可选路径 cyrjg_csv、gmbd_csv、fee_csv、overview_csv 若传入，则必须存在且可读，
+    否则 _resolve_existing 会 raise FileNotFoundError。
+    """
     log = logger or logging.getLogger(__name__)
     work_dir.mkdir(parents=True, exist_ok=True)
 

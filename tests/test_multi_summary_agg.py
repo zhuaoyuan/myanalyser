@@ -12,14 +12,14 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from multi_t_backtest import _write_multi_summary_agg
+
 
 class TestWriteMultiSummaryAgg:
     """_write_multi_summary_agg 单元测试"""
 
     def test_agg_values_match_describe_tolerance_1e6(self) -> None:
         """汇总指标与 df.describe() 等结果一致，容差 1e-6"""
-        from multi_t_backtest import _write_multi_summary_agg
-
         summary_df = pd.DataFrame({
             "as_of_date": ["2023-01-01", "2023-07-01", "2024-01-02"],
             "filter_start": ["2020-01-01"] * 3,
@@ -41,25 +41,25 @@ class TestWriteMultiSummaryAgg:
             numeric_df = summary_df[["年化收益率", "最大回撤率", "夏普比率"]].apply(
                 pd.to_numeric, errors="coerce"
             )
-            for stat in ("mean", "std", "min", "max"):
+            _stat_map = {"p25": "25%", "median": "50%", "p75": "75%"}
+            for stat in ("mean", "median", "std", "min", "max", "p25", "p75", "count"):
                 agg_row = agg_df[agg_df["stat_type"] == stat]
                 if agg_row.empty:
                     continue
+                describe_key = _stat_map.get(stat, stat)
                 for col in ["年化收益率", "最大回撤率", "夏普比率"]:
                     actual = agg_row[col].iloc[0]
-                    if actual == "" or (isinstance(actual, str) and not actual):
-                        expected = numeric_df[col].describe().get(stat)
+                    if actual == "" or pd.isna(actual) or (isinstance(actual, str) and not actual):
+                        expected = numeric_df[col].describe().get(describe_key)
                         assert pd.isna(expected) or numeric_df[col].isna().all()
                     else:
-                        expected = numeric_df[col].describe()[stat]
+                        expected = numeric_df[col].describe()[describe_key]
                         assert abs(float(actual) - float(expected)) < 1e-6, (
                             f"{stat} {col}: {actual} vs {expected}"
                         )
 
     def test_t_count_equals_summary_rows(self) -> None:
         """t_count 等于 multi_summary.csv 行数"""
-        from multi_t_backtest import _write_multi_summary_agg
-
         summary_df = pd.DataFrame({
             "as_of_date": ["2023-01-01", "2023-07-01"],
             "filter_start": ["2020-01-01"] * 2,
@@ -79,8 +79,6 @@ class TestWriteMultiSummaryAgg:
 
     def test_empty_summary_skips_agg(self) -> None:
         """summary_df 为空时不生成 agg 文件"""
-        from multi_t_backtest import _write_multi_summary_agg
-
         summary_df = pd.DataFrame()
         with tempfile.TemporaryDirectory() as d:
             out = Path(d)
@@ -89,8 +87,6 @@ class TestWriteMultiSummaryAgg:
 
     def test_single_t_std_empty_or_nan(self) -> None:
         """只有 1 个 T 日时 std 为空或 NaN"""
-        from multi_t_backtest import _write_multi_summary_agg
-
         summary_df = pd.DataFrame({
             "as_of_date": ["2023-01-01"],
             "filter_start": ["2020-01-01"],
@@ -111,8 +107,6 @@ class TestWriteMultiSummaryAgg:
 
     def test_win_rate_annual_return(self) -> None:
         """win_rate 为年化收益率 > 0 的比例"""
-        from multi_t_backtest import _write_multi_summary_agg
-
         summary_df = pd.DataFrame({
             "as_of_date": ["2023-01-01", "2023-07-01", "2024-01-02"],
             "filter_start": ["2020-01-01"] * 3,

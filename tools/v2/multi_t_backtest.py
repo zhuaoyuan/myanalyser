@@ -78,8 +78,16 @@ from check_trade_day_data_integrity import (
     compute_integrity_for_fund,
 )
 
+try:
+    from fund_metrics_core import HOLDING_METRIC_NAMES
+except ImportError:
+    HOLDING_METRIC_NAMES = ()
+
 
 logger = logging.getLogger(__name__)
+
+# win_rate 针对的列名，与 fund_metrics_core.HOLDING_METRIC_NAMES 对齐
+_ANN_RETURN_COL = "年化收益率"
 
 
 def _load_trade_calendar(trading_calendar_csv: Path) -> list[pd.Timestamp]:
@@ -315,76 +323,61 @@ def _read_allowed_codes(filter_csv: Path) -> set[str]:
     return {str(v).strip().zfill(6) for v in allowed_df["基金编码"].dropna().tolist()}
 
 
-# 非数值型列，不参与 agg 汇总
-_NON_METRIC_COLUMNS = frozenset({
-    "as_of_date", "filter_start", "filter_end", "backtest_start", "backtest_end",
-    "allowed_funds", "compare_summary", "integrity_summary", "eligible_csv",
-    "filter_csv", "scoreboard_csv", "summary_csv", "detail_csv", "report_md",
-})
-
-
 def _write_multi_summary_agg(summary_df: pd.DataFrame, output_root: Path) -> None:
     """基于 summary_df 生成 multi_summary_agg.csv，含跨 T 的汇总统计。
 
-    仅对 multi_summary 中存在的数值型 metrics 列计算 mean/median/std/min/max/p25/p75/count，
-    以及 win_rate（年化收益率>0 比例）、t_count。
+    仅对 multi_summary 中存在的数值型 metrics 列（与 fund_metrics_core.HOLDING_METRIC_NAMES 白名单
+    取交）计算 mean/median/std/min/max/p25/p75/count、win_rate（_ANN_RETURN_COL>0 比例）、t_count。
+    t_count 写入首列 metric_cols[0]，下游解析时以 stat_type=t_count 行、首指标列读取。
     """
     if summary_df.empty:
         logger.info("[multi] agg summary skipped: summary_df empty")
         return
 
-    metric_cols = [
-        c for c in summary_df.columns
-        if c not in _NON_METRIC_COLUMNS
-    ]
+    known_metrics = set(HOLDING_METRIC_NAMES) if HOLDING_METRIC_NAMES else set()
+    metric_cols = [c for c in summary_df.columns if c in known_metrics]
     if not metric_cols:
         logger.info("[multi] agg summary skipped: no metric columns")
         return
 
-    # 转换为数值，空串/非数值 -> NaN
-    numeric_df = summary_df[metric_cols].copy()
-    for c in metric_cols:
-        numeric_df[c] = pd.to_numeric(numeric_df[c], errors="coerce")
+    numeric_df = summary_df[metric_cols].apply(pd.to_numeric, errors="coerce")
 
     t_count = len(summary_df)
     agg_rows: list[dict[str, object]] = []
 
     def _fmt(v: float) -> str | float:
-        if pd.isna(v) or (isinstance(v, float) and v != v):
+        if pd.isna(v):
             return ""
         return v
 
-    for stat in ("mean", "median", "std", "min", "max"):
+    def _std_fn(s: pd.Series) -> float:
+        return s.std() if s.notna().sum() > 1 else float("nan")
+
+    _STAT_FNS: dict[str, object] = {
+        "mean": lambda s: s.mean(),
+        "median": lambda s: s.median(),
+        "std": _std_fn,
+        "min": lambda s: s.min(),
+        "max": lambda s: s.max(),
+    }
+    for stat, fn in _STAT_FNS.items():
         row: dict[str, object] = {"stat_type": stat}
         for c in metric_cols:
-            s = numeric_df[c]
-            if stat == "mean":
-                row[c] = _fmt(s.mean())
-            elif stat == "median":
-                row[c] = _fmt(s.median())
-            elif stat == "std":
-                row[c] = _fmt(s.std()) if s.notna().sum() > 1 else ""
-            elif stat == "min":
-                row[c] = _fmt(s.min())
-            elif stat == "max":
-                row[c] = _fmt(s.max())
+            row[c] = _fmt(fn(numeric_df[c]))
         agg_rows.append(row)
 
-    # p25, p75
     for q_name, q_val in [("p25", 0.25), ("p75", 0.75)]:
         row = {"stat_type": q_name}
         for c in metric_cols:
             row[c] = _fmt(numeric_df[c].quantile(q_val))
         agg_rows.append(row)
 
-    # count
     row = {"stat_type": "count"}
     for c in metric_cols:
         row[c] = int(numeric_df[c].notna().sum())
     agg_rows.append(row)
 
-    # win_rate: 年化收益率 > 0 的比例
-    ann_ret_col = "年化收益率" if "年化收益率" in metric_cols else None
+    ann_ret_col = _ANN_RETURN_COL if _ANN_RETURN_COL in metric_cols else None
     row = {"stat_type": "win_rate"}
     for c in metric_cols:
         if c == ann_ret_col:

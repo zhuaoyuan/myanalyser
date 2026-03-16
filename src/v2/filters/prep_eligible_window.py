@@ -1,5 +1,7 @@
 """v2: 预备 eligible 按窗口计算（仅使用本地缓存，不联网）。
 
+协议约定（详见 docs/参考/v2日期与区间协议约定.md）：窗口 [start_date, end_date] 双闭；成立+2年、end-1年 用自然日。
+
 缓存机制：
 - eligible_base_{start}_{end}.csv：c.1+a+b+e 结果，不依赖 personnel_dir
 - personnel_excluded_{start}_{end}.csv：规则 f 排除的基金编码

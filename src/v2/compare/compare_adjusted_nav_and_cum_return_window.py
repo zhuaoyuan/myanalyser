@@ -1,3 +1,7 @@
+"""v2: 在给定窗口内比对复权净值与累计收益率。
+
+协议约定（详见 docs/参考/v2日期与区间协议约定.md）：窗口 [start_date, end_date] 双闭。
+"""
 from __future__ import annotations
 
 import argparse

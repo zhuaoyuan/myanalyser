@@ -4,6 +4,9 @@
 运行 multi_t_backtest 流程，记录每一步过滤前后基金列表、精确过滤条件、依赖数据文件，
 并以第三方逻辑独立核验，生成验证报告。
 
+协议约定（详见 docs/参考/v2日期与区间协议约定.md）：
+- lookback：1 年 = 243 交易日；hold_days / t-step：交易日
+
 用法:
   python myanalyser/tools/v2/verify_filter_flow_report.py \
     --run-id "20260315_123456_full_run_v2" \
@@ -39,7 +42,7 @@ if str(_SCRIPT_DIR) not in sys.path:
 
 from project_paths import project_root
 
-from backtest_helpers import compute_end_extended_str
+from backtest_helpers import compute_end_extended_str, compute_start_from_lookback
 
 from backtest import load_fund_nav_data, run_backtest
 from backtest.engine import BacktestConfig, write_reports
@@ -221,7 +224,9 @@ def run_verify(
 
     for as_of_date in t_resolved:
         as_of_str = as_of_date.strftime("%Y-%m-%d")
-        start_date = (as_of_date - pd.DateOffset(years=lookback_years)).normalize()
+        start_date = compute_start_from_lookback(
+            as_of_date, lookback_years, trading_days
+        )
         start_str = start_date.strftime("%Y-%m-%d")
         end_str = as_of_str
         cache_key = f"{start_str}_{end_str}"

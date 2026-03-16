@@ -2,12 +2,54 @@
 
 位置: myanalyser/tools/v2/backtest_helpers.py
 供 multi_t_backtest、verify_filter_flow_report 等复用；通过 sys.path 插入 tools/v2 目录后 import。
+
+协议约定（详见 docs/参考/v2日期与区间协议约定.md）：
+- hold_days / t-step: 交易日
+- lookback: 1 年 = 243 交易日（A 股口径）
+- 日期区间: [start, end] 双闭
 """
 from __future__ import annotations
 
 from bisect import bisect_left
 
 import pandas as pd
+
+# A 股口径，与 fund_metrics_core.WindowConfig 一致
+TRADING_DAYS_PER_YEAR = 243
+
+
+def compute_start_from_lookback(
+    as_of_date: pd.Timestamp,
+    lookback_years: int,
+    trading_days: list[pd.Timestamp],
+    *,
+    trading_days_per_year: int = TRADING_DAYS_PER_YEAR,
+) -> pd.Timestamp:
+    """按交易日历计算 lookback 起始日（1 年 = trading_days_per_year 个交易日）。
+
+    Args:
+        as_of_date: T 日，须为交易日
+        lookback_years: 回看年数
+        trading_days: 交易日历列表（已排序）
+        trading_days_per_year: 每年交易日数，默认 243（A 股）
+
+    Returns:
+        起始日（T 往前第 lookback_years * trading_days_per_year 个交易日）
+
+    Raises:
+        ValueError: 起始索引 < 0（交易日历不足以覆盖 lookback）
+    """
+    t_index = bisect_left(trading_days, as_of_date)
+    if t_index >= len(trading_days):
+        t_index = len(trading_days) - 1
+    lookback_days = lookback_years * trading_days_per_year
+    start_index = t_index - lookback_days
+    if start_index < 0:
+        raise ValueError(
+            f"lookback ({lookback_years} 年 = {lookback_days} 交易日) 超出交易日历范围："
+            f"T={as_of_date.date()} 前仅 {t_index} 个交易日"
+        )
+    return trading_days[start_index]
 
 
 def compute_end_extended_str(

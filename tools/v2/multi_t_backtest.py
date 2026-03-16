@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""v2 多 T 日回测主入口。
+
+协议约定（详见 docs/参考/v2日期与区间协议约定.md）：
+- lookback：1 年 = 243 交易日（backtest_helpers.compute_start_from_lookback）
+- hold_days / t-step：交易日
+- 日期区间：[start, end] 双闭；filter/compare/integrity 延伸至 end_extended
+"""
 from __future__ import annotations
 
 # python myanalyser/tools/v2/multi_t_backtest.py \
@@ -59,7 +66,7 @@ from transforms.build_filtered_purchase_csv import build_filtered_purchase_csv
 from v2.compare.compare_adjusted_nav_and_cum_return_window import (
     compare_adjusted_nav_and_cum_return_window,
 )
-from backtest_helpers import compute_end_extended_str
+from backtest_helpers import compute_end_extended_str, compute_start_from_lookback
 from v2.filters.filter_funds_for_next_step import filter_funds_for_next_step
 from v2.filters.prep_eligible_window import (
     compute_personnel_excluded_and_merge,
@@ -447,7 +454,9 @@ def main() -> None:
     for t in t_list:
         as_of_date = _resolve_trade_day(t, trading_days)
         as_of_str = as_of_date.strftime("%Y-%m-%d")
-        start_date = (as_of_date - pd.DateOffset(years=args.lookback_years)).normalize()
+        start_date = compute_start_from_lookback(
+            as_of_date, args.lookback_years, trading_days
+        )
         start_str = start_date.strftime("%Y-%m-%d")
         end_str = as_of_str
 

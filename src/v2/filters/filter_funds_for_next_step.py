@@ -1,5 +1,7 @@
 """v2: 按数据质量过滤可进入下一步的基金列表（支持 end-date）。
 
+协议约定（详见 docs/参考/v2日期与区间协议约定.md）：日期区间 [start_date, end_date] 双闭。
+
 规则：
   1. 规则1: 基金必须在 fund_overview.csv 中
   2. 规则2: 必须在 fund_nav_by_code 中存在 NAV 原始净值

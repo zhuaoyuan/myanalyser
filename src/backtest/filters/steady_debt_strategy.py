@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from fund_metrics_core import WindowConfig
 from steady_debt_logic import filter_one
 
 from ..data import BacktestData
@@ -27,8 +28,6 @@ def _compute_steady_debt_metrics(
     """
     if df_hist.empty or len(df_hist) < 2:
         return {}
-
-    from fund_metrics_core import WindowConfig
 
     cfg = WindowConfig()
     min_3y = cfg.trading_days_per_year * 3

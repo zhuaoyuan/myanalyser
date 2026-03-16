@@ -37,7 +37,11 @@ _STEADY_DEBT_SCORE_GROUPS = [
 
 @dataclass(frozen=True)
 class SteadyDebtScoreStrategy(ScoreStrategy):
-    """稳健型评分：主目标卡玛，次目标夏普、回撤。"""
+    """稳健型评分：主目标卡玛，次目标夏普、回撤。
+
+    调用方应保证 symbols 已通过 SteadyDebtFilterStrategy 筛选（含近 3 年窗口），
+    否则短窗口基金可能产生异常指标。
+    """
 
     name: str = "steady_debt_score"
 

@@ -172,6 +172,20 @@ class TestNormalScenarios(unittest.TestCase):
         })
         self.assertFalse(ok, "应通过")
 
+        # 边界：max_dd=-0.08 临界通过，max_dd=-0.0801 应被过滤
+        ok, _ = filter_one({
+            "近3年最大回撤率": -0.08,
+            "近3年年化收益率": 0.05,
+            "近3年夏普比率": 0.5,
+        })
+        self.assertFalse(ok, "临界值应通过")
+        fail, _ = filter_one({
+            "近3年最大回撤率": -0.0801,
+            "近3年年化收益率": 0.05,
+            "近3年夏普比率": 0.5,
+        })
+        self.assertTrue(fail, "略超临界应被过滤")
+
         # 过滤：回撤过深
         fail, msg = filter_one({
             "近3年最大回撤率": -0.12,

@@ -61,6 +61,38 @@ def _filter_symbols_with_parallel(
     return sorted(result)
 
 
+def _slice_data_upto(data: BacktestData, as_of_ts: pd.Timestamp) -> BacktestData:
+    """构造仅包含 <= as_of_ts 数据的 BacktestData 视图，用于调仓决策。"""
+    as_of_ts = pd.Timestamp(as_of_ts).normalize()
+
+    long_df = data.long_df
+    if "date" in long_df.columns:
+        long_df = long_df[long_df["date"] <= as_of_ts]
+
+    by_symbol: dict[str, pd.DataFrame] = {}
+    for symbol, df_symbol in data.by_symbol.items():
+        if df_symbol is None or df_symbol.empty:
+            continue
+        if "date" not in df_symbol.columns:
+            continue
+        df_hist = df_symbol.loc[df_symbol["date"] <= as_of_ts]
+        if df_hist.empty:
+            continue
+        by_symbol[symbol] = df_hist
+
+    if long_df.empty or "date" not in long_df.columns:
+        trading_dates: list[pd.Timestamp] = []
+    else:
+        trading_dates = sorted(
+            pd.Series(long_df["date"].unique())
+            .dropna()
+            .map(lambda d: pd.Timestamp(d).normalize())
+            .tolist()
+        )
+
+    return BacktestData(long_df=long_df, by_symbol=by_symbol, trading_dates=trading_dates)
+
+
 @dataclass(frozen=True)
 class BacktestResult:
     result: object
@@ -205,11 +237,12 @@ def run_backtest(
             return
 
         universe = symbols
+        strategy_data = _slice_data_upto(data, current_ts)
         candidates = _filter_symbols_with_parallel(
-            bundle.filter_strategy, data, current_ts, universe
+            bundle.filter_strategy, strategy_data, current_ts, universe
         )
         scored = bundle.score_strategy.score(
-            data, current_ts, candidates
+            strategy_data, current_ts, candidates
         )
         weights = bundle.position_strategy.target_weights(scored, top_n)
 

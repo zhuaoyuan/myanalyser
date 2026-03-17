@@ -72,6 +72,40 @@ def _list_t_dirs(output_root: Path) -> list[tuple[Path, str]]:
     return [(d, d.name) for d in date_dirs]
 
 
+def _write_chain_curves_html(equity_curve: pd.DataFrame, output_dir: Path) -> Path | None:
+    """生成仅含组合累计收益率的 Plotly HTML 曲线。"""
+    try:
+        import plotly.graph_objects as go
+    except ImportError:
+        return None
+
+    if equity_curve.empty or len(equity_curve) < 2:
+        return None
+
+    dates = pd.to_datetime(equity_curve["date"], errors="coerce")
+    cum_ret = equity_curve["cumulative_return"].values * 100
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=dates,
+            y=cum_ret,
+            name="组合",
+            line=dict(color="#1f77b4", width=2),
+        )
+    )
+    fig.update_layout(
+        title_text="链式调仓组合净值曲线",
+        xaxis_title="日期",
+        yaxis_title="累计收益率 (%)",
+        height=500,
+        showlegend=True,
+    )
+    path = output_dir / "backtest_curves.html"
+    fig.write_html(str(path), config={"displayModeBar": True})
+    return path
+
+
 def chain(output_root: Path, chain_output_dir: str = "chain") -> Path:
     """执行链式模拟，写入 chain 子目录。"""
     output_root = Path(output_root).resolve()
@@ -191,6 +225,11 @@ def chain(output_root: Path, chain_output_dir: str = "chain") -> Path:
     first_eq = float(merged["equity"].iloc[0])
     base_eq = first_eq if first_eq > 0 else 1.0
     merged["cumulative_return"] = merged["equity"] / base_eq - 1.0
+
+    # 1.1 组合净值曲线 HTML（仅组合，无成分基金）
+    curves_path = _write_chain_curves_html(merged.copy(), out_dir)
+    if curves_path is not None:
+        logger.info("[chain] backtest_curves.html -> %s", curves_path)
 
     equity_path = out_dir / "equity_curve.csv"
     merged["date"] = merged["date"].dt.strftime("%Y-%m-%d")
@@ -318,6 +357,7 @@ def chain(output_root: Path, chain_output_dir: str = "chain") -> Path:
         "- period_detail.csv",
         "- orders.csv",
         "- positions_flat.csv",
+        "- backtest_curves.html（组合净值曲线）",
         "",
     ]
     report_path = out_dir / "backtest_report.md"

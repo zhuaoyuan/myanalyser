@@ -10,11 +10,14 @@
 输出单一 HTML（backtest_curves.html），含 Summary 对比表（14 项指标）与 Plotly 净值曲线图。
 
 用法:
-  python myanalyser/tools/compare_backtest_curves.py \
+python myanalyser/tools/compare_backtest_curves.py \
     --backtest-dir myanalyser/artifacts/backtest_multi/20260315_123456_full_run_v2/20260316_2m/chain \
     --base-dir myanalyser/artifacts/backtest_base/20260315_123456_fund_index/807200_申万债券 \
     --base-dir myanalyser/artifacts/backtest_base/20260315_123456_full_run_v2/保守型_A \
-    --output-dir myanalyser/artifacts/backtest_base/20260315_123456_full_run_v2/保守型_B
+    --base-dir myanalyser/artifacts/backtest_base/20260315_123456_full_run_v2/保守型_B \
+    --start-date 2021-01-06 --end-date 2026-01-12 \
+    --output-dir myanalyser/artifacts/backtest_base/20260315_123456_full_run_v2/compare_4
+  # 可选：限定时间范围 --start-date 2020-01-01 --end-date 2024-12-31
 """
 from __future__ import annotations
 
@@ -40,6 +43,7 @@ logger = logging.getLogger(__name__)
 SUMMARY_METRIC_KEYS = [k for k in HOLDING_METRIC_NAMES if k != "标准误差"]
 
 # 指标方向：True=越大越好，False=越小越好
+# 最大回撤率为负值，-5% 优于 -15%，故越大越好；年化波动率、最长回撤修复天数越小越好
 _METRIC_HIGHER_IS_BETTER: dict[str, bool] = {
     "年化收益率": True,
     "夏普比率": True,
@@ -51,7 +55,7 @@ _METRIC_HIGHER_IS_BETTER: dict[str, bool] = {
     "净值R方": True,
     "上涨星期比例": True,
     "上涨月份比例": True,
-    "最大回撤率": False,
+    "最大回撤率": True,  # 负值，-5% 优于 -15%
     "最长回撤修复天数": False,
     "年化波动率": False,
 }
@@ -98,10 +102,15 @@ def _get_label(dir_path: Path) -> str:
     return dir_path.name
 
 
-def _compute_intersection_dates(curves: list[tuple[str, pd.DataFrame]]) -> pd.DatetimeIndex | None:
+def _compute_intersection_dates(
+    curves: list[tuple[str, pd.DataFrame]],
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> pd.DatetimeIndex | None:
     """计算时间范围：起止对齐（取各曲线起止的交集区间），过程中间日期取并集。
 
-    即 [max(各曲线起始), min(各曲线结束)] 内的所有日期（任一曲线有值即保留），
+    若传入 start_date/end_date，则与曲线实际范围取交集；不传则保持当前行为。
+    即 [range_start, range_end] 内的所有日期（任一曲线有值即保留），
     某组合在某日无值时用前向填充，不影响其他组合展示。
     """
     if not curves:
@@ -110,6 +119,12 @@ def _compute_intersection_dates(curves: list[tuple[str, pd.DataFrame]]) -> pd.Da
     max_dates = [df["date"].max() for _, df in curves]
     range_start = max(min_dates)
     range_end = min(max_dates)
+    if start_date is not None:
+        ts = pd.to_datetime(start_date).normalize()
+        range_start = max(range_start, ts)
+    if end_date is not None:
+        ts = pd.to_datetime(end_date).normalize()
+        range_end = min(range_end, ts)
     if range_start > range_end:
         return None
     # 并集：范围内任一曲线有值的日期
@@ -200,11 +215,11 @@ def _build_summary_table_html(summary_rows: list[dict]) -> str:
                 vals.append((i, fv))
         if len(vals) < 2:
             continue
+        # higher=True: [大,...,小]，best=首，worst=末
+        # higher=False: [小,...,大]，best=首（最小，如年化波动率、最长回撤修复天数），worst=末
         sorted_vals = sorted(vals, key=lambda x: x[1], reverse=higher)
-        # higher=True: 排序后 [大,...,小]，best=首，worst=末
-        # higher=False: 排序后 [小,...,大]，best=末（最大），worst=首（最小，如最大回撤率 -15% 最差）
-        best_idx[col] = sorted_vals[0][0] if higher else sorted_vals[-1][0]
-        worst_idx[col] = sorted_vals[-1][0] if higher else sorted_vals[0][0]
+        best_idx[col] = sorted_vals[0][0]
+        worst_idx[col] = sorted_vals[-1][0]
         if best_idx[col] == worst_idx[col]:
             del worst_idx[col]  # 全部相同则不标绿
 
@@ -293,6 +308,8 @@ def run(
     base_dirs: list[Path],
     output_dir: Path,
     trading_days_per_year: int = DEFAULT_TRADING_DAYS_PER_YEAR,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ) -> dict[str, Path]:
     """执行对比：加载曲线、取交集、生成 HTML 与 summary。"""
     all_dirs: list[Path] = []
@@ -316,8 +333,10 @@ def run(
     if not curves_raw:
         raise ValueError("无有效 equity_curve 数据")
 
-    # 日期交集
-    common_dates = _compute_intersection_dates(curves_raw)
+    # 日期交集（可传参起止日期限定范围）
+    common_dates = _compute_intersection_dates(
+        curves_raw, start_date=start_date, end_date=end_date
+    )
     if common_dates is None or len(common_dates) < 2:
         raise ValueError("各输入曲线日期无交集或交集不足 2 交易日")
 
@@ -398,6 +417,16 @@ def main() -> None:
         default=DEFAULT_TRADING_DAYS_PER_YEAR,
         help=f"年化交易日数（默认 {DEFAULT_TRADING_DAYS_PER_YEAR}）",
     )
+    parser.add_argument(
+        "--start-date",
+        default=None,
+        help="起始日期 YYYY-MM-DD（可选，与曲线范围取交集）",
+    )
+    parser.add_argument(
+        "--end-date",
+        default=None,
+        help="结束日期 YYYY-MM-DD（可选，与曲线范围取交集）",
+    )
     args = parser.parse_args()
 
     all_dirs = args.backtest_dirs + args.base_dirs
@@ -411,6 +440,8 @@ def main() -> None:
             base_dirs=args.base_dirs,
             output_dir=args.output_dir,
             trading_days_per_year=args.trading_days_per_year,
+            start_date=args.start_date,
+            end_date=args.end_date,
         )
         print(f"\n输出:")
         for k, p in out.items():

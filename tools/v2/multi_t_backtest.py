@@ -330,6 +330,10 @@ def _write_multi_summary_agg(summary_df: pd.DataFrame, output_root: Path) -> Non
     仅对 multi_summary 中存在的数值型 metrics 列（与 fund_metrics_core.HOLDING_METRIC_NAMES 白名单
     取交）计算 mean/median/std/min/max/p25/p75/count、win_rate（_ANN_RETURN_COL>0 比例）、t_count。
     t_count 写入首列 metric_cols[0]，下游解析时以 stat_type=t_count 行、首指标列读取。
+
+    注：卡玛比率、溃疡绩效指数在持仓期不足 12 月时为说明串（「样本不足，不计算...」），
+    pd.to_numeric(errors="coerce") 会将其转为 NaN；聚合时 mean/median/std 等忽略 NaN，
+    count 为有效数值个数，短周期 run 会降低对应指标的 count。
     """
     if summary_df.empty:
         logger.info("[multi] agg summary skipped: summary_df empty")

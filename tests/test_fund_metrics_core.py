@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numbers
 import sys
 import unittest
 from pathlib import Path
@@ -39,7 +40,7 @@ class TestComputeHoldingPeriodMetricsCalmar(unittest.TestCase):
         prices = np.linspace(1.0, 1.05, n)
         prices[100:120] *= 0.98  # 约 -2% 回撤
         out = compute_holding_period_metrics(dates, prices, config=WindowConfig(trading_days_per_year=243))
-        self.assertIsInstance(out["卡玛比率"], (int, float))
+        self.assertTrue(isinstance(out["卡玛比率"], numbers.Real))
         self.assertIsNotNone(out["卡玛比率"])
         self.assertGreater(out["卡玛比率"], 0)
 
@@ -63,6 +64,6 @@ class TestComputeHoldingPeriodMetricsUPI(unittest.TestCase):
         prices = np.linspace(1.0, 1.05, n)
         prices[100:120] *= 0.98  # 有回撤才有溃疡指数
         out = compute_holding_period_metrics(dates, prices, config=WindowConfig(trading_days_per_year=243))
-        self.assertIsInstance(out["溃疡绩效指数"], (int, float))
+        self.assertTrue(isinstance(out["溃疡绩效指数"], numbers.Real))
         self.assertIsNotNone(out["溃疡绩效指数"])
         self.assertGreater(out["溃疡绩效指数"], 0)

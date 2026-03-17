@@ -91,6 +91,18 @@ python myanalyser/tools/pybroker_fund_backtest.py --strategy steady_debt --nav-d
 | backtest_report.md | Markdown 报告（运行参数、Top 3 调仓期、输出文件索引） |
 | backtest_curves.html | Plotly 收益曲线图（组合 + 成分基金对照，需 `plotly` 依赖） |
 
+### 多 T 调仓链式模拟（chain_multi_t_backtest）
+
+基于 `multi_t_backtest` 产物，用前 T 期末市值作为后 T 期初市值，串联长期效果。前提：前 T 期末日期 ≤ 后 T 期初日期；无买入的 T 跳过。输出与单 T 相同格式。
+
+```bash
+python myanalyser/tools/v2/chain_multi_t_backtest.py \
+  --output-root myanalyser/artifacts/backtest_multi/RUN_ID/RULESET_VERSION \
+  [--chain-output-dir chain]
+```
+
+产物写入 `{output-root}/chain/`（默认），含 summary.csv、equity_curve.csv、period_detail.csv、orders.csv、positions_flat.csv、backtest_report.md。
+
 ## 常用命令
 
 ```bash

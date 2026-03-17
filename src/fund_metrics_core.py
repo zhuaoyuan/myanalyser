@@ -242,13 +242,18 @@ def compute_holding_period_metrics(
 ) -> dict[str, float | None | str]:
     """计算持仓期间全样本指标（无 1y/3y 窗口），用于 metrics_holding。
 
-    卡玛比率、溃疡绩效指数：持仓期不足 12 个月（约 243 交易日）时不计算，
-    改为返回说明串（「样本不足，不计算卡玛」/「样本不足，不计算溃疡绩效指数」），
+    卡玛比率、溃疡绩效指数：持仓期不足 12 个月时不计算，改为返回说明串
+    （「样本不足，不计算卡玛」/「样本不足，不计算溃疡绩效指数」），
     避免外推年化与短期实现口径不一致导致指标失真。
 
     Args:
         dates: np.datetime64[D] 数组。
-        prices: float 数组。
+        prices: float 数组，按交易日对齐；以 len(prices) 作为样本量阈值，
+            若含非交易日或聚合周期不同，需在调用前先行过滤。
+
+    Returns:
+        dict: 键见 HOLDING_METRIC_NAMES。卡玛比率、溃疡绩效指数在
+        len(prices) < trading_days_per_year 时为 str 说明串，否则为 float 或 None。
     """
     cfg = config or WindowConfig()
     prices = np.asarray(prices, dtype=float)
@@ -267,20 +272,19 @@ def compute_holding_period_metrics(
     sharpe = sharpe_ratio(daily_returns, cfg.trading_days_per_year)
     sortino = sortino_ratio(daily_returns, cfg.trading_days_per_year)
     max_dd = max_drawdown(prices)
+    has_min_period = len(prices) >= cfg.trading_days_per_year
+
     calmar: float | str | None = None
-    if ann_return is not None and max_dd is not None and max_dd != 0:
-        if len(prices) >= cfg.trading_days_per_year:
-            calmar = ann_return / abs(max_dd)
-        else:
-            calmar = "样本不足，不计算卡玛"
+    if has_min_period and ann_return is not None and max_dd is not None and max_dd != 0:
+        calmar = ann_return / abs(max_dd)
+    elif not has_min_period:
+        calmar = "样本不足，不计算卡玛"
+
     pf = profit_factor(prices)
     ui = ulcer_index(prices)
-    upi_raw = ulcer_performance_index(prices, cfg.trading_days_per_year)
-    upi: float | str | None = None
-    if len(prices) >= cfg.trading_days_per_year:
-        upi = upi_raw
-    elif upi_raw is not None:
-        upi = "样本不足，不计算溃疡绩效指数"
+    upi: float | str | None = (
+        ulcer_performance_index(prices, cfg.trading_days_per_year) if has_min_period else "样本不足，不计算溃疡绩效指数"
+    )
     r2 = equity_r_squared(prices)
     std_err = regression_std_error(prices)
     weekly_up = float(np.nanmean(weekly_returns > 0)) if len(weekly_returns) > 0 else None

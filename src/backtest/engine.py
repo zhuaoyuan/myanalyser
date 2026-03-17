@@ -406,7 +406,7 @@ def _compute_portfolio_metrics_holding(
     equity_curve: pd.DataFrame,
     orders_df: pd.DataFrame,
     trading_days_per_year: int = 243,
-) -> dict[str, float | None]:
+) -> dict[str, float | None | str]:
     """持仓期间指标（首次买入 → 结束），无买入时返回空。"""
     first_buy = _get_first_buy_date(orders_df)
     if first_buy is None or equity_curve.empty or len(equity_curve) < 2:

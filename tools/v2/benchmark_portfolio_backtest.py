@@ -65,8 +65,8 @@ def parse_portfolio(portfolio_str: str) -> list[tuple[str, float]]:
     if not items:
         raise ValueError("组合为空")
     total_weight = sum(w for _, w in items)
-    if abs(total_weight - 1.0) > 0.01:
-        raise ValueError(f"权重之和 {total_weight:.4f} != 1.0（容差 0.01）")
+    if abs(total_weight - 1.0) > 1e-6:
+        raise ValueError(f"权重之和 {total_weight:.8f} != 1.0（容差 1e-6）")
     return items
 
 
@@ -185,6 +185,8 @@ def _per_fund_compare(
 
     window_end = common[-1]
     good, total = 0, 0
+    # cum_return 以 100 为基准（即 100 + 累计收益率%）
+    _CUM_RETURN_BASE = 100.0
     for d in common[:-1]:
         local_s = float(adj_series.loc[d])
         local_e = float(adj_series.loc[window_end])
@@ -194,16 +196,17 @@ def _per_fund_compare(
 
         remote_s = float(cum_series.loc[d])
         remote_e = float(cum_series.loc[window_end])
-        denom = remote_s + 100.0
-        if denom == 0:
+        denom = remote_s + _CUM_RETURN_BASE
+        if abs(denom) < 1e-9:
             continue
         remote_ret = (remote_e - remote_s) / denom
 
         total += 1
-        if abs(local_ret) < 1e-8:
+        max_abs = max(abs(local_ret), abs(remote_ret))
+        if max_abs < 1e-8:
             good += 1
             continue
-        if abs((local_ret - remote_ret) / local_ret) < 0.01:
+        if abs(local_ret - remote_ret) / max_abs < 0.01:
             good += 1
 
     return (good / total) if total > 0 else None
@@ -279,6 +282,9 @@ def simulate_portfolio(
     for code in codes:
         price_df[code] = nav_data[code].reindex(trade_dates)
 
+    for code in codes:
+        if price_df[code].isna().all():
+            raise ValueError(f"基金 {code} 在日期范围内无任何净值数据")
     price_df = price_df.ffill().dropna()
     if price_df.empty:
         raise ValueError("前向填充后无完整数据行")
@@ -286,6 +292,9 @@ def simulate_portfolio(
     dates = list(price_df.index)
     prices = price_df.values  # (n_dates, n_funds)
 
+    if np.any(prices[0] <= 0):
+        bad = [codes[i] for i, p in enumerate(prices[0]) if p <= 0]
+        raise ValueError(f"首日净值为零或负值: {bad}")
     shares = initial_capital * weights / prices[0]
     equity_values: list[dict] = []
 

@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import logging
 import subprocess
 import sys
@@ -28,6 +29,8 @@ _MYANALYSER_ROOT = _SCRIPT_DIR.parent.parent
 
 logger = logging.getLogger(__name__)
 
+# 组合定义来源: docs/参考/比较基准.md（汇总一览表）。
+# 此处硬编码以保证可靠性；若 Markdown 有变更，需同步更新本列表。
 BENCHMARKS: list[tuple[str, str]] = [
     ("保守型_A", "161119:1.00"),
     ("保守型_B", "161119:0.90,510050:0.10"),
@@ -40,7 +43,7 @@ BENCHMARKS: list[tuple[str, str]] = [
 ]
 
 DEFAULT_START = "2015-02-27"
-DEFAULT_END = "2026-03-13"
+DEFAULT_END = datetime.date.today().isoformat()
 DEFAULT_REBALANCE = 243
 
 

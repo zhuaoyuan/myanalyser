@@ -407,8 +407,9 @@ bash tools/run_full_pipeline.sh
 
 ## 最小回归基线
 
-- 基线目录：`tests/baseline/mini_case/`
-- 输入数据来自历史 `data/versions` 与 `artifacts` 产物抽样，不使用 mock
-- 期望输出目录默认：`tests/baseline/mini_case/expected/default`
-- 可通过环境变量切换期望目录：`MYANALYSER_BASELINE_EXPECTED_DIR=/abs/path/to/expected`
-- 关键回归用例：`tests/test_pipeline_regression_baseline.py`
+- **mini_case**（旧版流程）：`tests/baseline/mini_case/`，回归用例 `tests/test_pipeline_regression_baseline.py`
+- **mini_case_v2**（V2 流程）：`tests/baseline/mini_case_v2/`，小份固定输入跑 step5~10，逐环节与 `expected/default` 对比
+  - 输入：fund_etl（nav、bonus、split、overview、purchase、personnel、cum_return）
+  - 回归用例：`tests/test_v2_baseline_regression.py`，由 `v2/verify.sh` step2b 调用
+  - 生成 expected：`python tools/v2/generate_baseline_expected.py`（修改流程后需重跑以更新基线）
+- 期望目录切换：`MYANALYSER_BASELINE_EXPECTED_DIR=/abs/path/to/expected`

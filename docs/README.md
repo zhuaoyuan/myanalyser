@@ -40,10 +40,9 @@ myanalyser/
 - `src/adjusted_nav_tool.py`：复权净值计算
 - `src/compare_adjusted_nav_and_cum_return.py`：复权收益率一致性比对
 - `src/check_trade_day_data_integrity.py`：交易日完整性检查
-- `src/pipeline_scoreboard.py`：评分榜单计算、导出与入库（支持 `--formal-only`、`--skip-sinks`、`--latest-nav-date`、`--clickhouse-write-profile`、`--clickhouse-write-scope`）
+- `src/pipeline_scoreboard.py`：评分榜单计算、导出与入库（支持 `--formal-only`、`--skip-sinks`、`--latest-nav-date`）
 - `src/scoreboard_metrics.py`：评分榜指标计算共享模块（供 pipeline 与 verify 共用；与 backtest 共用 `fund_metrics_core` 保证口径一致）
 - `src/fund_metrics_core.py`：基金指标计算核心逻辑（Backtest 与 Scoreboard 共用，A 股口径：243 交易日/年、20 交易日/月）
-- `src/backtest_verify_e2e.py`：verify step10 回测适配层（ClickHouse 选基 + 本地净值 + PyBroker 引擎）
 - `src/fund_gmbd.py`：基金规模变动数据抓取（东方财富 FundArchivesDatas API，akshare 风格 `fund_gmbd_em(code)`）；CLI `tools/prep/fetch_fund_gmbd.py`
 - `src/fund_cyrjg.py`：基金持有人结构数据抓取（东方财富 FundArchivesDatas API，akshare 风格 `fund_cyrjg_em(code)`）；CLI `tools/prep/fetch_fund_cyrjg.py`
 - `tools/prep/prep_data_workflow.py`：**预备数据工作流**，从指定日期起拉取并筛选基金预备数据（购买 x → 持有人比例 a、规模 b、费率 c → 基金分类 c.1 → 详情 e → 多条件筛选 d.1）；支持已有 CSV 增量复用
@@ -163,7 +162,7 @@ python src/pipeline_scoreboard.py \
   --data-version ${RUN_ID} \
   --as-of-date 2026-02-26 \
   --formal-only
-# 或使用 --skip-sinks 保留 nav/period 构建但跳过 DB 写入
+# 或使用 --skip-sinks 保留 nav/period 构建但跳过 DB 写入（v2 verify 使用此模式）
 
 # 历史截断模式（用于更公正的回测）：
 # 仅使用 <= latest-nav-date 的净值与人事数据计算榜单。
@@ -178,10 +177,6 @@ python src/pipeline_scoreboard.py \
   --as-of-date 2025-12-31 \
   --latest-nav-date 2025-12-31 \
   --formal-only
-
-# 验收/联调场景可控制 ClickHouse 写入策略
-# --clickhouse-write-profile: auto|safe|fast（默认 auto）
-# --clickhouse-write-scope: full|verify_minimal（仅写 nav_daily + scoreboard）
 ```
 
 ```bash
@@ -195,10 +190,10 @@ python src/verify_scoreboard_recalc.py \
 #   --latest-nav-date 2025-12-31
 ```
 
-核验脚本从 `fund_adjusted_nav_by_code` 重算年化收益、夏普比率、最大回撤等指标及排名，与导出榜单逐项比对。产物：`summary.csv`（每只基金是否全部通过）、`details/{基金代码}.csv`（逐项明细）、`metrics_recalc_sample.csv`。默认 `--max-input-rows 200`，超过会报错（重算需全量输入，不支持抽样）。
+核验脚本从 `fund_adjusted_nav_by_code` 重算年化收益、夏普比率、最大回撤等指标及排名，与导出榜单逐项比对。产物：`summary.csv`（每只基金是否全部通过）、`details/{基金代码}.csv`（逐项明细）、`metrics_recalc_sample.csv`。默认 `--max-input-rows 200`，超过会报错（重算需全量输入，不支持抽样）。v2 verify step10 会调用此脚本。
 
 ```bash
-# 8) 按 stage 执行中间产物契约校验（示例）
+# 8) 由过滤结果生成过滤后 purchase（供 step10 消费）
 python src/validators/validate_pipeline_artifacts.py \
   --stage scoreboard_input \
   --artifact purchase_csv=data/versions/${RUN_ID}/fund_etl/fund_purchase_for_step10_filtered.csv \
@@ -273,143 +268,46 @@ pip install -r myanalyser/requirements-lock.txt
 pip install -r myanalyser/requirements.txt
 ```
 
-### Docker 基础设施
+## V2 全流程脚本
 
-数据库联调需本地可用 Docker（用于 `fund_db_infra` 的 MySQL + ClickHouse）。镜像已锁定：`mysql:8.4`、`clickhouse/clickhouse-server:25.8`。
+### 1) 验收跑（`tools/v2/verify.sh`）
 
-## 两类全流程脚本
-
-### 1) 验收跑（`tools/verify.sh`）
-
-用于代码和流程回归验收，重点是“快而全地证明链路可用”。
+用于代码和流程回归验收，**不依赖** fund_infra（Docker/MySQL/ClickHouse）。
 
 - 单测回归（`tests/test_*.py`）
-- 核心 CLI smoke（`fund_etl`、`pipeline_scoreboard`、`backtest_verify_e2e`、`compare_adjusted_nav_and_cum_return`、`check_trade_day_data_integrity`）
-- Step 10b 筛选与打分（消费 scoreboard，产出 `filter_result.csv`、`scored_result.csv`）
-- 启动 `fund_db_infra`（MySQL + ClickHouse）
-- ETL 抽样数据链路（step1~step7，抽样 21 只：前 20 + `163402`）
-- 复权净值计算、交易日完整性检查、复权收益率一致性比对
-- Step 9.5 基金过滤（过滤结果会用于后续评分与回测）
-- 评分榜单入库与导出、回测报告生成
-  - Step10 默认以快速模式写 ClickHouse：`--clickhouse-write-profile fast`
-  - Step10 默认使用最小写入范围：`--clickhouse-write-scope verify_minimal`（仅 `fact_fund_nav_daily` + `fact_fund_scoreboard_snapshot`）
-- Step 11 独立重算核验（`verify_scoreboard_recalc.py`），要求 `scoreboard_recheck/summary.csv` 全部通过
-- 自动生成运行报告汇总（每步耗时、步骤成功率、异常分布、过滤前后数量变化）
+- 核心 CLI smoke（fund_etl、pipeline、backtest、compare、integrity、filter_funds_for_next_step、run_filter_and_score）
+- V2 基线回归（step5~10 与 expected 对比）
+- fund_etl step1 + 抽样 21 只
+- fund_etl step2~step7
+- 复权净值、交易日完整性、复权 vs 累计收益比对
+- v2 过滤（filter_funds_for_next_step）+ filtered purchase
+- 评分榜（`--skip-sinks`，仅 CSV）
+- 筛选打分（step10 使用 `non_a_unlimited_purchase`）+ 重算核验
 
 ```bash
 cd /Users/zhuaoyuan/cursor-workspace/finance/myanalyser
-source /Users/zhuaoyuan/cursor-workspace/finance/myanalyser/.venv312/bin/activate
-bash tools/verify.sh
+source .venv312/bin/activate
+bash tools/v2/verify.sh
 ```
-
-如需固定本次验收目录名，可显式传入 `RUN_ID`：
 
 ```bash
-RUN_ID=20260226_220000_verify bash tools/verify.sh
+RUN_ID=20260319_120000_verify_v2 bash tools/v2/verify.sh
 ```
 
-如需固定数据库版本号，可同时指定 `DATA_VERSION`：
+### 2) 正式跑（`tools/v2/run_full_pipeline.sh`）
+
+全量 ETL + integrity/compare/filter/scoreboard。详见 `docs/V2完整流程说明.md`。
 
 ```bash
-RUN_ID=20260226_220000_verify DATA_VERSION=20260226_verify_db bash tools/verify.sh
+cd myanalyser && source .venv312/bin/activate
+bash tools/v2/run_full_pipeline.sh @myanalyser/tmp/prep_work_v2/fund_purchase.csv
 ```
-
-如需覆盖 Step10 写库策略，可通过环境变量修改：
-
-```bash
-VERIFY_SCOREBOARD_CH_WRITE_PROFILE=safe bash tools/verify.sh
-```
-
-主要产物位置：
-
-- `data/versions/{RUN_ID}/fund_etl`
-- `data/versions/{RUN_ID}/logs`
-- `artifacts/verify_{RUN_ID}/scoreboard`
-- `artifacts/verify_{RUN_ID}/backtest`
-- `artifacts/verify_{RUN_ID}/filter_score`（filter_result.csv、scored_result.csv）
-- `artifacts/verify_{RUN_ID}/scoreboard_recheck`
-- `artifacts/verify_{RUN_ID}/run_report_steps.csv`
-- `artifacts/verify_{RUN_ID}/run_report_summary.csv`
-- `artifacts/verify_{RUN_ID}/run_report.md`
-
-Step10 还会在终端打印分段耗时：`scoreboard_seconds` 与 `backtest_seconds`，用于快速定位瓶颈。
-
-### 2) 正式跑（`tools/run_full_pipeline.sh`）
-
-用于真实生产/正式跑数，重点是“全量数据 + 正式计算 + 可配置时间窗口”。
-
-- 不跑单测和 CLI smoke，不做验收抽样（验收跑为 21 只），直接全量 ETL（`fund_etl --mode all`）
-- 包含交易日完整性检查、复权收益率一致性比对、Step 9.5 过滤
-- 评分流程使用 `--formal-only`（纯 Python 计算，不写 DB），直接消费过滤后的 `fund_purchase_for_step10_filtered.csv`
-- 支持同 `RUN_ID` 断点续跑：各步骤成功后写 checkpoint，再次运行时优先复用已完成产物
-- 不包含 backtest、不包含核验（核验仅在 `verify.sh` 中执行）
-- 自动生成运行报告汇总（每步耗时、步骤成功率、异常分布、过滤前后数量变化）
-
-```bash
-cd /Users/zhuaoyuan/cursor-workspace/finance/myanalyser
-source /Users/zhuaoyuan/cursor-workspace/finance/myanalyser/.venv312/bin/activate
-bash tools/run_full_pipeline.sh
-```
-
-长时任务推荐使用隔离启动脚本（会自动创建 `git worktree`、记录元数据并后台运行）：
-
-```bash
-cd /Users/zhuaoyuan/cursor-workspace/finance
-bash myanalyser/tools/start_isolated_pipeline.sh \
-  --venv /Users/zhuaoyuan/cursor-workspace/finance/myanalyser/.venv312
-```
-
-隔离启动脚本常用参数：
-
-- `--venv /path/to/venv`：为后台进程注入 `VIRTUAL_ENV` 与 `PATH`。
-- `--allow-dirty`：允许当前开发工作区有未提交改动（会记录到 `VERSION_INFO`，但运行代码仍固定在当前 `HEAD`）。
-- `--target-dir /path/to/run_dir`：指定 worktree 运行目录。
-- `@/path/to/fund_purchase.csv`：传入本次运行使用的 purchase 文件。
-
-通过隔离脚本传递 `run_full_pipeline.sh` 环境变量（推荐命令前缀）：
-
-```bash
-ETL_MAX_WORKERS=16 \
-FILTER_START_DATE=2023-01-01 \
-DATA_VERSION=202602_custom \
-bash myanalyser/tools/start_isolated_pipeline.sh \
-  --venv /Users/zhuaoyuan/cursor-workspace/finance/myanalyser/.venv312
-```
-
-常用参数通过环境变量传入：
-
-```bash
-RUN_ID=20260226_230000_formal \
-DATA_VERSION=20260226_formal_db \
-INTEGRITY_START_DATE=2015-01-01 \
-INTEGRITY_END_DATE=2025-12-31 \
-FILTER_START_DATE=2023-01-01 \
-FILTER_MAX_ABS_DEVIATION=0.02 \
-bash tools/run_full_pipeline.sh
-```
-
-主要产物位置：
-
-- `data/versions/{RUN_ID}/fund_etl`
-- `data/versions/{RUN_ID}/logs`
-- `artifacts/full_run_{RUN_ID}/filtered_fund_candidates.csv`
-- `artifacts/full_run_{RUN_ID}/scoreboard`
-- `artifacts/full_run_{RUN_ID}/.checkpoints`（步骤完成标记，用于断点续跑）
-- `artifacts/full_run_{RUN_ID}/run_report_steps.csv`
-- `artifacts/full_run_{RUN_ID}/run_report_summary.csv`
-- `artifacts/full_run_{RUN_ID}/run_report.md`
-
-隔离启动额外产物（位于隔离目录根，例如 `../finance-runs/run_YYYYMMDD_HHMMSS/`）：
-
-- `VERSION_INFO`：运行时间、commit、branch、运行 PID、venv 等元信息
-- `LAUNCH_INFO`：启动参数记录（如 `PIPELINE_ARG`、`VENV_DIR`）
-- `pipeline.log`：后台运行日志
 
 ## 最小回归基线
 
-- **mini_case**（旧版流程）：`tests/baseline/mini_case/`，回归用例 `tests/test_pipeline_regression_baseline.py`
-- **mini_case_v2**（V2 流程）：`tests/baseline/mini_case_v2/`，小份固定输入跑 step5~10，逐环节与 `expected/default` 对比
+- **mini_case_v2**：`tests/baseline/mini_case_v2/`，小份固定输入跑 step5~10，逐环节与 `expected/default` 对比
   - 输入：fund_etl（nav、bonus、split、overview、purchase、personnel、cum_return）
   - 回归用例：`tests/test_v2_baseline_regression.py`，由 `v2/verify.sh` step2b 调用
   - 生成 expected：`python tools/v2/generate_baseline_expected.py`（修改流程后需重跑以更新基线）
+  - filter 区分：`v2/verify.sh` step10 使用 `non_a_unlimited_purchase`（验收用，确保 scored_result 非空）；baseline 回归与 generate 使用 `most_stable`
 - 期望目录切换：`MYANALYSER_BASELINE_EXPECTED_DIR=/abs/path/to/expected`

@@ -230,13 +230,6 @@ def test_run_with_all_csvs_incremental(tmp_path: Path) -> None:
     purchase_csv = tmp_path / "purchase.csv"
     _make_purchase_df(["000001", "000002"]).to_csv(purchase_csv, index=False, encoding="utf-8-sig")
 
-    cyrjg_csv = tmp_path / "cyrjg.csv"
-    pd.DataFrame({
-        "基金代码": ["000001", "000002"],
-        "日期": ["2024-06-01", "2024-06-01"],
-        "机构持有比例": ["50%", "40%"],
-    }).to_csv(cyrjg_csv, index=False, encoding="utf-8-sig")
-
     gmbd_csv = tmp_path / "gmbd.csv"
     pd.DataFrame({
         "基金代码": ["000001", "000002"],
@@ -280,7 +273,6 @@ def test_run_with_all_csvs_incremental(tmp_path: Path) -> None:
             output_path=out,
             work_dir=work,
             purchase_csv=purchase_csv,
-            cyrjg_csv=cyrjg_csv,
             gmbd_csv=gmbd_csv,
             fee_csv=fee_csv,
             overview_csv=overview_csv,
@@ -307,18 +299,6 @@ def test_cli_missing_required_args() -> None:
         with pytest.raises(SystemExit) as exc:
             pw.main()
         assert exc.value.code != 0
-
-
-def test_step_a_cyrjg_cli_failure(tmp_path: Path) -> None:
-    """异常：cyrjg 抓取失败（无 existing）时抛出 FileNotFoundError。"""
-    x_path = tmp_path / "x.csv"
-    _make_purchase_df(["000001"]).to_csv(x_path, index=False, encoding="utf-8-sig")
-    work = tmp_path / "work"
-    work.mkdir()
-
-    with patch.object(pw, "_run_cli", return_value=False):
-        with pytest.raises(FileNotFoundError, match="持有人比例抓取失败"):
-            pw._step_a_cyrjg(x_path, work, None, 0.3, logging.getLogger("test"))
 
 
 def test_safe_code_none() -> None:

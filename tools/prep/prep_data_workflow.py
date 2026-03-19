@@ -5,12 +5,11 @@
 
 流程：
 1. 获取全体基金购买 (x)
-2. 根据 x 获取持有人比例全历史 (a)
-3. 根据 x 获取基金规模全历史 (b)
-4. 根据 x 获取基金费率全历史 (c)
-5. 根据 c 进行基金分类 (c.1)
-6. 根据 x 获取全体基金详情 (e)
-7. 筛选：x + c.1(存在) + b(曾有规模>2亿) + e(date前成立) -> d.1
+2. 根据 x 获取基金规模全历史 (b)
+3. 根据 x 获取基金费率全历史 (c)
+4. 根据 c 进行基金分类 (c.1)
+5. 根据 x 获取全体基金详情 (e)
+6. 筛选：x + c.1(存在) + b(曾有规模>2亿) + e(date前成立) -> d.1
 
 说明：--date 仅用于规则 e（仅保留 date 之前成立的基金）。
 
@@ -19,7 +18,6 @@ python myanalyser/tools/prep/prep_data_workflow.py \
   --date 2021-01-01 \
   -o myanalyser/tmp/1/prep_result_m.csv \
   --purchase-csv finance-runs/run_20260310_191534/data/versions/20260310_191534/fund_etl/fund_purchase.csv \
-  --cyrjg-csv finance-runs/run_20260310_191534/data/versions/20260310_191534/fund_etl/cyrjg_out.csv \
   --gmbd-csv /Users/zhuaoyuan/cursor-workspace/finance/myanalyser/tmp/prep_work/fund_gmbd.csv \
   --fee-csv finance-runs/run_20260310_191534/data/versions/20260310_191534/fund_etl/fee/fund_fee_complete_fixed.csv \
   --overview-csv finance-runs/run_20260301_1_formal_retry_step4_rerun/data/versions/20260301_1_formal_retry_step4_rerun/fund_etl/fund_overview.csv
@@ -91,32 +89,6 @@ def _step1_purchase(work_dir: Path, logger: logging.Logger) -> pd.DataFrame:
     df = run_step1_purchase(out)
     logger.info("[x] 完成 基金购买 %d 行 -> %s", len(df), out)
     return df
-
-
-def _step_a_cyrjg(
-    purchase_csv: Path,
-    work_dir: Path,
-    existing_csv: Path | None,
-    delay: float,
-    logger: logging.Logger,
-) -> Path:
-    """获取持有人比例全历史 a。若 existing_csv 传入则直接使用。"""
-    if existing_csv and existing_csv.exists():
-        logger.info("[a] 使用已有持有人比例: %s", existing_csv)
-        return existing_csv
-
-    n_codes = len(pd.read_csv(purchase_csv, dtype={"基金代码": str})["基金代码"].dropna().unique())
-    logger.info("[a] 开始抓取持有人比例，共 %d 只基金", n_codes)
-    out = work_dir / "fund_cyrjg.csv"
-    ok = _run_cli(
-        "fetch_fund_cyrjg.py",
-        ["-i", str(purchase_csv), "-o", str(out), "--delay", str(delay)],
-        logger,
-    )
-    if not ok or not out.exists():
-        raise FileNotFoundError("持有人比例抓取失败")
-    logger.info("[a] 完成 持有人比例 -> %s", out)
-    return out
 
 
 def _step_b_gmbd(
@@ -347,7 +319,6 @@ def run(
     work_dir: Path,
     *,
     purchase_csv: Path | None = None,
-    cyrjg_csv: Path | None = None,
     gmbd_csv: Path | None = None,
     fee_csv: Path | None = None,
     overview_csv: Path | None = None,
@@ -368,8 +339,7 @@ def run(
         x_df = _step1_purchase(work_dir, log)
         x_path = work_dir / "fund_purchase.csv"
 
-    # 2–4. a, b, c
-    a_path = _step_a_cyrjg(x_path, work_dir, cyrjg_csv, delay, log)
+    # 2–4. b, c
     b_path = _step_b_gmbd(x_path, work_dir, gmbd_csv, delay, log)
     c_path = _step_c_fee(x_path, work_dir, fee_csv, delay, log)
 
@@ -396,7 +366,6 @@ def main() -> int:
     parser.add_argument("-o", "--output", type=Path, required=True, help="最终结果文件路径 (d.1)")
     parser.add_argument("--work-dir", type=Path, default=None, help="工作目录，默认与 output 同目录下的 prep_work")
     parser.add_argument("--purchase-csv", type=Path, default=None, help="已有基金购买 CSV，传入则跳过 step1")
-    parser.add_argument("--cyrjg-csv", type=Path, default=None, help="已有持有人比例 CSV，传入则直接使用")
     parser.add_argument("--gmbd-csv", type=Path, default=None, help="已有规模 CSV，传入则增量查询")
     parser.add_argument("--fee-csv", type=Path, default=None, help="已有费率 CSV，传入则增量查询")
     parser.add_argument("--overview-csv", type=Path, default=None, help="已有基金详情 CSV，传入则增量查询")
@@ -412,7 +381,6 @@ def main() -> int:
             output_path=output_path,
             work_dir=work_dir,
             purchase_csv=args.purchase_csv.resolve() if args.purchase_csv else None,
-            cyrjg_csv=args.cyrjg_csv.resolve() if args.cyrjg_csv else None,
             gmbd_csv=args.gmbd_csv.resolve() if args.gmbd_csv else None,
             fee_csv=args.fee_csv.resolve() if args.fee_csv else None,
             overview_csv=args.overview_csv.resolve() if args.overview_csv else None,

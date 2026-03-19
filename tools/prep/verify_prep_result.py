@@ -102,7 +102,6 @@ def run(
     include_b: set[str] = set()
     if gmbd.exists():
         b_df = pd.read_csv(gmbd, dtype=str)
-        b_df["日期"] = pd.to_datetime(b_df["日期"], errors="coerce")
         scale_col = "期末净资产（亿元）"
         if scale_col in b_df.columns:
             b_df["_scale"] = pd.to_numeric(b_df[scale_col], errors="coerce")

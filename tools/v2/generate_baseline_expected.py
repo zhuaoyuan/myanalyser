@@ -2,6 +2,7 @@
 """Generate mini_case_v2 expected outputs. Run once to bootstrap baseline.
 
 PROJECT = myanalyser 根目录，脚本位于 myanalyser/tools/v2/
+设计为直接运行，不作为模块导入（含 os.chdir 等副作用）。
 """
 from __future__ import annotations
 
@@ -78,14 +79,18 @@ subprocess.run([sys.executable, "src/transforms/build_filtered_purchase_csv.py",
 # Step9: scoreboard
 nav_dir = work_etl / "fund_adjusted_nav_by_code"
 max_date = None
+skipped = 0
 for p in nav_dir.glob("*.csv"):
     try:
         df = pd.read_csv(p, usecols=["净值日期"], dtype=str, encoding="utf-8-sig")
     except (KeyError, ValueError):
+        skipped += 1
         continue
     ds = pd.to_datetime(df["净值日期"], errors="coerce").dropna()
     if not ds.empty and (max_date is None or ds.max() > max_date):
         max_date = ds.max()
+if skipped > 0:
+    print(f"Warning: 跳过 {skipped} 个 nav 文件（缺列或格式异常）")
 as_of = max_date.strftime("%Y-%m-%d") if max_date is not None else "2025-12-31"
 scoreboard_dir = artifacts / "scoreboard"
 scoreboard_dir.mkdir(parents=True, exist_ok=True)

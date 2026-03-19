@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
@@ -136,8 +137,15 @@ class V2BaselineRegressionTest(unittest.TestCase):
             for p in nav_dir.glob("*.csv"):
                 try:
                     df = pd.read_csv(p, usecols=["净值日期"], dtype=str, encoding="utf-8-sig")
-                except (KeyError, ValueError):
+                except KeyError:
+                    logging.warning("跳过 nav 文件（缺列）: %s", p)
                     continue
+                except ValueError as e:
+                    err_str = str(e).lower()
+                    if "usecols" in err_str or "not in list" in err_str or "columns" in err_str:
+                        logging.warning("跳过 nav 文件（列相关）: %s: %s", p, e)
+                        continue
+                    raise
                 ds = pd.to_datetime(df["净值日期"], errors="coerce").dropna()
                 if not ds.empty and (max_date is None or ds.max() > max_date):
                     max_date = ds.max()

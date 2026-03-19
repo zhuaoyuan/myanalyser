@@ -134,8 +134,9 @@ class V2BaselineRegressionTest(unittest.TestCase):
             nav_dir = fund_etl / "fund_adjusted_nav_by_code"
             max_date = None
             for p in nav_dir.glob("*.csv"):
-                df = pd.read_csv(p, usecols=["净值日期"], dtype=str, encoding="utf-8-sig")
-                if "净值日期" not in df.columns:
+                try:
+                    df = pd.read_csv(p, usecols=["净值日期"], dtype=str, encoding="utf-8-sig")
+                except (KeyError, ValueError):
                     continue
                 ds = pd.to_datetime(df["净值日期"], errors="coerce").dropna()
                 if not ds.empty and (max_date is None or ds.max() > max_date):

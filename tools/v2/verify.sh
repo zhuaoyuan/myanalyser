@@ -220,8 +220,10 @@ printf 'step,status,duration_seconds\n' >"${RUN_REPORT_STEPS_CSV}"
 
 # ---------------------------------------------------------------------------
 # Step 1: 单元测试
+# unittest discover 不加载 pytest conftest，需显式设置 PYTHONPATH 供 test_fetch_fund_* 等导入 tools/prep
 # ---------------------------------------------------------------------------
 start_step "step1_unit_tests"
+export PYTHONPATH="${PROJECT_ROOT}/src:${PROJECT_ROOT}/tools:${PROJECT_ROOT}/tools/v2:${PROJECT_ROOT}/tools/prep:${PYTHONPATH:-}"
 "${PYTHON_BIN}" -m unittest discover -s tests -p "test_*.py" -v
 finish_step "success"
 
@@ -456,10 +458,11 @@ finish_step "success"
 # ---------------------------------------------------------------------------
 start_step "step10_filter_score_and_recalc"
 FILTER_SCORE_WORK_DIR="${ARTIFACTS_DIR}/filter_score"
+# 使用 non_a_unlimited_purchase 替代 most_stable，确保 verify 采样下至少有基金通过过滤，避免 scored_result 为空导致 assert 失败
 bash tools/run_filter_and_score.sh \
   -i "${SCOREBOARD_DIR}/fund_scoreboard_${DATA_VERSION}.csv" \
   -w "${FILTER_SCORE_WORK_DIR}" \
-  -f src/filter_score/filters/most_stable.py \
+  -f src/filter_score/filters/non_a_unlimited_purchase.py \
   -s src/filter_score/scores/low_risk_debt.py
 assert_csv_has_rows "${FILTER_SCORE_WORK_DIR}/filter_result.csv"
 assert_csv_has_rows "${FILTER_SCORE_WORK_DIR}/scored_result.csv"

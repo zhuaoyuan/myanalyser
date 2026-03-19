@@ -11,6 +11,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 PROJECT = Path(__file__).resolve().parent.parent.parent  # myanalyser
 sys.path.insert(0, str(PROJECT / "src"))
 os.chdir(PROJECT)
@@ -77,8 +79,9 @@ subprocess.run([sys.executable, "src/transforms/build_filtered_purchase_csv.py",
 nav_dir = work_etl / "fund_adjusted_nav_by_code"
 max_date = None
 for p in nav_dir.glob("*.csv"):
-    df = pd.read_csv(p, dtype={"净值日期": str}, encoding="utf-8-sig")
-    if "净值日期" not in df.columns:
+    try:
+        df = pd.read_csv(p, usecols=["净值日期"], dtype=str, encoding="utf-8-sig")
+    except (KeyError, ValueError):
         continue
     ds = pd.to_datetime(df["净值日期"], errors="coerce").dropna()
     if not ds.empty and (max_date is None or ds.max() > max_date):

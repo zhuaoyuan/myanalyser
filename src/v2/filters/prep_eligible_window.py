@@ -241,12 +241,12 @@ def run(
     else:
         include_e = None
 
-    # a: 排除在 [成立+2年, 窗口 end_date] 内机构持仓连续两次 > 60% 的基金（不做 start_ts 裁剪）
+    # a: 排除在 [max(成立+2年, start_ts), end_ts] 内机构持仓连续两次 > 60% 的基金
     a_df = pd.read_csv(cyrjg_csv, dtype=str, encoding="utf-8-sig")
     date_col = "日期" if "日期" in a_df.columns else "公告日期"
     a_df = a_df.copy()
     a_df[date_col] = pd.to_datetime(a_df[date_col], errors="coerce")
-    a_df = a_df[a_df[date_col] <= end_ts]
+    a_df = a_df[(a_df[date_col] >= start_ts) & (a_df[date_col] <= end_ts)]
     a_df["_pct"] = a_df["机构持有比例"].map(_parse_pct)
     a_df["_code"] = a_df["基金代码"].map(safe_fund_code)
     a_df = a_df[a_df["_code"] != ""]
@@ -257,12 +257,12 @@ def run(
         inc = inc_by_code.get(code)
         if inc is None:
             continue
-        cutoff = inc + two_years
-        sub = grp[grp[date_col] >= cutoff]  # grp 已限制 date<=end_ts，无需重复判断
+        cutoff = max(inc + two_years, start_ts)
+        sub = grp[grp[date_col] >= cutoff]  # grp 已限制 [start_ts,end_ts]，sub 为 [cutoff,end_ts]
         if _has_consecutive_over_60(sub, date_col):
             exclude_a.add(code)
     codes -= exclude_a
-    log.info("[eligible] a([成立+2年,end_date]内连续两次>60%%排除) 后 %d，排除 %d", len(codes), len(exclude_a))
+    log.info("[eligible] a([max(成立+2年,start),end]内连续两次>60%%排除) 后 %d，排除 %d", len(codes), len(exclude_a))
 
     # b: 仅保留 end_date 前最新一条规模 > 2 亿的基金
     b_df = pd.read_csv(gmbd_csv, dtype=str, encoding="utf-8-sig")

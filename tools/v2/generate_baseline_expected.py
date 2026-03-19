@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
-"""Generate mini_case_v2 expected outputs. Run once to bootstrap baseline."""
+"""Generate mini_case_v2 expected outputs. Run once to bootstrap baseline.
+
+PROJECT = myanalyser 根目录，脚本位于 myanalyser/tools/v2/
+"""
 from __future__ import annotations
-import os, subprocess, sys, shutil
+
+import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
+
 PROJECT = Path(__file__).resolve().parent.parent.parent  # myanalyser
 sys.path.insert(0, str(PROJECT / "src"))
 os.chdir(PROJECT)
@@ -11,6 +19,10 @@ output_root = PROJECT / "tests" / "baseline" / "mini_case_v2" / "_run_output"
 expected_dir = PROJECT / "tests" / "baseline" / "mini_case_v2" / "expected" / "default"
 fund_etl = input_root / "fund_etl"
 trade_dates = PROJECT / "data" / "common" / "trade_dates.csv"
+
+if expected_dir.exists() and not os.getenv("OVERWRITE_BASELINE"):
+    sys.exit("expected 已存在，设置 OVERWRITE_BASELINE=1 覆盖")
+
 shutil.rmtree(output_root, ignore_errors=True)
 output_root.mkdir(parents=True)
 artifacts = output_root / "artifacts"
@@ -23,29 +35,13 @@ subprocess.run([sys.executable, "src/adjusted_nav_tool.py",
     "--output-dir", str(fund_etl / "fund_adjusted_nav_by_code"),
     "--allow-missing-event-until", "2020-12-31",
 ], check=True, capture_output=True)
-# Create cum_return from adjusted_nav for step7 compare
-import pandas as pd
-for p in (fund_etl / "fund_adjusted_nav_by_code").glob("*.csv"):
-    df = pd.read_csv(p, dtype=str)
-    if "净值日期" not in df.columns or "复权净值" not in df.columns:
-        continue
-    df["净值日期"] = pd.to_datetime(df["净值日期"], errors="coerce")
-    df["复权净值"] = pd.to_numeric(df["复权净值"], errors="coerce")
-    df = df.dropna(subset=["净值日期", "复权净值"]).sort_values("净值日期")
-    if df.empty or len(df) < 2:
-        continue
-    code = p.stem.zfill(6)
-    base = float(df["复权净值"].iloc[0])
-    if base <= 0:
-        continue
-    cum = (df["复权净值"] / base - 1) * 100  # percentage points
-    out = fund_etl / "fund_cum_return_by_code" / f"{code}.csv"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame({
-        "基金代码": df["基金代码"] if "基金代码" in df.columns else code,
-        "日期": df["净值日期"].dt.strftime("%Y-%m-%d"),
-        "累计收益率": cum.round(6).astype(str),
-    }).to_csv(out, index=False, encoding="utf-8-sig")
+# Create cum_return from adjusted_nav for step7 compare (共享逻辑见 _baseline_helpers)
+from _baseline_helpers import build_cum_return_from_adjusted_nav
+
+build_cum_return_from_adjusted_nav(
+    fund_etl / "fund_adjusted_nav_by_code",
+    fund_etl / "fund_cum_return_by_code",
+)
 # Copy fund_etl to work dir for steps 6-10 (steps modify in place or use output)
 work_etl = output_root / "fund_etl"
 shutil.copytree(fund_etl, work_etl)

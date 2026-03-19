@@ -75,7 +75,11 @@ class V2FlowCliSmokeTest(unittest.TestCase):
             self.assertTrue((out / "details").is_dir())
 
     def test_compare_backtest_curves_cli_smoke(self) -> None:
-        """compare_backtest_curves 可正常执行。"""
+        """compare_backtest_curves 可正常执行。
+
+        cwd 使用 _PROJECT_ROOT.parent (workspace 根目录)：脚本在 tools/ 下，
+        与 benchmark/prep 等 tools/v2/ 脚本的 cwd 约定不同。
+        """
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             dir_a = root / "strategy_a"
@@ -99,6 +103,7 @@ class V2FlowCliSmokeTest(unittest.TestCase):
                 "--base-dir", str(dir_b),
                 "--output-dir", str(out),
             ]
+            # compare_backtest_curves 在 tools/ 下，路径解析与 test_cli_integration 一致，用 parent
             ret = subprocess.run(cmd, cwd=str(_PROJECT_ROOT.parent), capture_output=True, text=True)
             self.assertEqual(ret.returncode, 0, f"stderr: {ret.stderr}")
             self.assertTrue((out / "backtest_curves.html").exists())
@@ -265,7 +270,7 @@ class V2FlowCliSmokeTest(unittest.TestCase):
                 "-f", str(_PROJECT_ROOT / "src" / "filter_score" / "filters" / "most_stable.py"),
                 "-s", str(_PROJECT_ROOT / "src" / "filter_score" / "scores" / "low_risk_debt.py"),
             ]
-            ret = subprocess.run(cmd, cwd=str(_PROJECT_ROOT.parent), capture_output=True, text=True, env={**__import__("os").environ, **env})
+            ret = subprocess.run(cmd, cwd=str(_PROJECT_ROOT.parent), capture_output=True, text=True, env={**os.environ, **env})
             self.assertEqual(ret.returncode, 0, f"stderr: {ret.stderr}")
             self.assertTrue((work_dir / "filter_result.csv").exists())
             self.assertTrue((work_dir / "scored_result.csv").exists())

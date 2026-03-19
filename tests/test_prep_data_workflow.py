@@ -5,7 +5,7 @@
 场景分类：
 - 正常场景：纯函数、筛选逻辑、完整流程（mock 外部依赖）
 - 异常场景：缺参、不存在的 CSV、子 CLI 失败
-- 边界条件：空值、恰好等于阈值（60%、2亿、date）、空 DataFrame、列名变体
+- 边界条件：空值、恰好等于阈值（2亿、date）、空 DataFrame
 """
 from __future__ import annotations
 
@@ -69,29 +69,6 @@ def test_parse_date_slash_format() -> None:
     assert d.year == 2024 and d.month == 6 and d.day == 1
 
 
-# ============= 纯函数：_parse_pct =============
-
-
-def test_parse_pct_normal() -> None:
-    """正常：63.45%、0.30%。"""
-    assert pw._parse_pct("63.45%") == 63.45
-    assert pw._parse_pct("  0.30%  ") == 0.30
-
-
-def test_parse_pct_empty_and_special() -> None:
-    """边界：空、---、None。"""
-    assert pw._parse_pct(None) is None
-    assert pw._parse_pct("") is None
-    assert pw._parse_pct("---") is None
-    assert pw._parse_pct(pd.NA) is None
-
-
-def test_parse_pct_boundary_60() -> None:
-    """边界：恰好 60% 应解析为 60.0（用于筛选 >60 排除）。"""
-    assert pw._parse_pct("60%") == 60.0
-    assert pw._parse_pct("60.00%") == 60.0
-
-
 # ============= _apply_filters 筛选逻辑 =============
 
 
@@ -118,12 +95,6 @@ def test_apply_filters_all_pass(tmp_path: Path) -> None:
     pd.DataFrame({"类型": ["A类30天", "A类30天"], "基金编码": ["000001", "000002"], "申购费率": ["0.1%", "0.1%"], "赎回费率": ["0%", "0%"]}).to_csv(
         tmp_path / "c1.csv", index=False, encoding="utf-8-sig"
     )
-    # a: 无机构>60%
-    pd.DataFrame({
-        "基金代码": ["000001", "000002"],
-        "日期": ["2024-06-01", "2024-06-01"],
-        "机构持有比例": ["50%", "40%"],
-    }).to_csv(tmp_path / "a.csv", index=False, encoding="utf-8-sig")
     # b: 都曾规模>2亿
     pd.DataFrame({
         "基金代码": ["000001", "000002"],
@@ -139,77 +110,11 @@ def test_apply_filters_all_pass(tmp_path: Path) -> None:
     logger = logging.getLogger("test")
     result = pw._apply_filters(
         purchase, date_str,
-        tmp_path / "a.csv", tmp_path / "b.csv", tmp_path / "c1.csv", tmp_path / "e.csv",
+        tmp_path / "b.csv", tmp_path / "c1.csv", tmp_path / "e.csv",
         logger,
     )
     assert len(result) == 2
     assert set(result["基金代码"].str.zfill(6)) == {"000001", "000002"}
-
-
-def test_apply_filters_exclude_org_over_60(tmp_path: Path) -> None:
-    """正常：date 后、成立>2年后、机构持仓连续两次>60% 的基金应排除。"""
-    purchase = _make_purchase_df(["000001", "000002", "000003"])
-    pd.DataFrame({
-        "类型": ["A类30天"] * 3,
-        "基金编码": ["000001", "000002", "000003"],
-        "申购费率": ["0.1%"] * 3,
-        "赎回费率": ["0%"] * 3,
-    }).to_csv(tmp_path / "c1.csv", index=False, encoding="utf-8-sig")
-    # 000001 未连续两次>60%，保留；000002 连续两次>60% 且成立>2年，排除；000003 单次>60% 不排除
-    pd.DataFrame({
-        "基金代码": ["000001", "000001", "000002", "000002", "000003"],
-        "日期": ["2024-06-01", "2024-12-01", "2024-06-01", "2024-12-01", "2024-06-01"],
-        "机构持有比例": ["50%", "55%", "65%", "70%", "65%"],
-    }).to_csv(tmp_path / "a.csv", index=False, encoding="utf-8-sig")
-    pd.DataFrame({
-        "基金代码": ["000001", "000002", "000003"],
-        "日期": ["2024-06-01", "2024-06-01", "2024-06-01"],
-        "期末净资产（亿元）": ["5", "3", "4"],
-    }).to_csv(tmp_path / "b.csv", index=False, encoding="utf-8-sig")
-    pd.DataFrame({
-        "基金代码": ["000001", "000002", "000003"],
-        "成立日期/规模": ["2020-01-01", "2021-06-15", "2020-06-01"],
-    }).to_csv(tmp_path / "e.csv", index=False, encoding="utf-8-sig")
-
-    logger = logging.getLogger("test")
-    result = pw._apply_filters(
-        purchase, "2024-01-01",
-        tmp_path / "a.csv", tmp_path / "b.csv", tmp_path / "c1.csv", tmp_path / "e.csv",
-        logger,
-    )
-    assert len(result) == 2
-    result_codes = set(result["基金代码"].str.zfill(6))
-    assert result_codes == {"000001", "000003"}
-
-
-def test_apply_filters_boundary_org_exactly_60(tmp_path: Path) -> None:
-    """边界：机构持有恰好 60% 应保留（需求是 >60% 排除）。"""
-    purchase = _make_purchase_df(["000001"])
-    pd.DataFrame({"类型": ["A类30天"], "基金编码": ["000001"], "申购费率": ["0.1%"], "赎回费率": ["0%"]}).to_csv(
-        tmp_path / "c1.csv", index=False, encoding="utf-8-sig"
-    )
-    pd.DataFrame({
-        "基金代码": ["000001"],
-        "日期": ["2024-06-01"],
-        "机构持有比例": ["60%"],
-    }).to_csv(tmp_path / "a.csv", index=False, encoding="utf-8-sig")
-    pd.DataFrame({
-        "基金代码": ["000001"],
-        "日期": ["2024-06-01"],
-        "期末净资产（亿元）": ["5"],
-    }).to_csv(tmp_path / "b.csv", index=False, encoding="utf-8-sig")
-    pd.DataFrame({
-        "基金代码": ["000001"],
-        "成立日期/规模": ["2020-01-01"],
-    }).to_csv(tmp_path / "e.csv", index=False, encoding="utf-8-sig")
-
-    logger = logging.getLogger("test")
-    result = pw._apply_filters(
-        purchase, "2024-01-01",
-        tmp_path / "a.csv", tmp_path / "b.csv", tmp_path / "c1.csv", tmp_path / "e.csv",
-        logger,
-    )
-    assert len(result) == 1
 
 
 def test_apply_filters_boundary_scale_exactly_2(tmp_path: Path) -> None:
@@ -218,11 +123,6 @@ def test_apply_filters_boundary_scale_exactly_2(tmp_path: Path) -> None:
     pd.DataFrame({"类型": ["A类30天"], "基金编码": ["000001"], "申购费率": ["0.1%"], "赎回费率": ["0%"]}).to_csv(
         tmp_path / "c1.csv", index=False, encoding="utf-8-sig"
     )
-    pd.DataFrame({
-        "基金代码": ["000001"],
-        "日期": ["2024-06-01"],
-        "机构持有比例": ["40%"],
-    }).to_csv(tmp_path / "a.csv", index=False, encoding="utf-8-sig")
     pd.DataFrame({
         "基金代码": ["000001"],
         "日期": ["2024-06-01"],
@@ -236,7 +136,7 @@ def test_apply_filters_boundary_scale_exactly_2(tmp_path: Path) -> None:
     logger = logging.getLogger("test")
     result = pw._apply_filters(
         purchase, "2024-01-01",
-        tmp_path / "a.csv", tmp_path / "b.csv", tmp_path / "c1.csv", tmp_path / "e.csv",
+        tmp_path / "b.csv", tmp_path / "c1.csv", tmp_path / "e.csv",
         logger,
     )
     assert len(result) == 0
@@ -251,11 +151,6 @@ def test_apply_filters_boundary_inc_date_eq_date(tmp_path: Path) -> None:
     pd.DataFrame({
         "基金代码": ["000001"],
         "日期": ["2024-06-01"],
-        "机构持有比例": ["40%"],
-    }).to_csv(tmp_path / "a.csv", index=False, encoding="utf-8-sig")
-    pd.DataFrame({
-        "基金代码": ["000001"],
-        "日期": ["2024-06-01"],
         "期末净资产（亿元）": ["5"],
     }).to_csv(tmp_path / "b.csv", index=False, encoding="utf-8-sig")
     # 成立日期 = 2024-01-01
@@ -267,7 +162,7 @@ def test_apply_filters_boundary_inc_date_eq_date(tmp_path: Path) -> None:
     logger = logging.getLogger("test")
     result = pw._apply_filters(
         purchase, "2024-01-01",
-        tmp_path / "a.csv", tmp_path / "b.csv", tmp_path / "c1.csv", tmp_path / "e.csv",
+        tmp_path / "b.csv", tmp_path / "c1.csv", tmp_path / "e.csv",
         logger,
     )
     assert len(result) == 0
@@ -279,9 +174,7 @@ def test_apply_filters_missing_file_skips_condition(tmp_path: Path) -> None:
     pd.DataFrame({"类型": ["A类30天"], "基金编码": ["000001"], "申购费率": ["0.1%"], "赎回费率": ["0%"]}).to_csv(
         tmp_path / "c1.csv", index=False, encoding="utf-8-sig"
     )
-    # a 不存在 -> 跳过 a
-    (tmp_path / "a.csv").write_text("", encoding="utf-8")
-    (tmp_path / "a.csv").unlink()
+    # b 不存在 -> 跳过 b，其余满足
     pd.DataFrame({
         "基金代码": ["000001"],
         "日期": ["2024-06-01"],
@@ -293,42 +186,13 @@ def test_apply_filters_missing_file_skips_condition(tmp_path: Path) -> None:
     }).to_csv(tmp_path / "e.csv", index=False, encoding="utf-8-sig")
 
     logger = logging.getLogger("test")
+    # 使用不存在的 b 路径，应跳过 b 条件
     result = pw._apply_filters(
         purchase, "2024-01-01",
-        tmp_path / "a.csv", tmp_path / "b.csv", tmp_path / "c1.csv", tmp_path / "e.csv",
+        tmp_path / "b_nonexistent.csv", tmp_path / "c1.csv", tmp_path / "e.csv",
         logger,
     )
-    # a 跳过，其余满足，应保留
-    assert len(result) == 1
-
-
-def test_apply_filters_cyrjg_uses_gonggao_date(tmp_path: Path) -> None:
-    """边界：cyrjg 使用公告日期列名时正确解析。"""
-    purchase = _make_purchase_df(["000001"])
-    pd.DataFrame({"类型": ["A类30天"], "基金编码": ["000001"], "申购费率": ["0.1%"], "赎回费率": ["0%"]}).to_csv(
-        tmp_path / "c1.csv", index=False, encoding="utf-8-sig"
-    )
-    pd.DataFrame({
-        "基金代码": ["000001"],
-        "公告日期": ["2024-06-01"],
-        "机构持有比例": ["40%"],
-    }).to_csv(tmp_path / "a.csv", index=False, encoding="utf-8-sig")
-    pd.DataFrame({
-        "基金代码": ["000001"],
-        "日期": ["2024-06-01"],
-        "期末净资产（亿元）": ["5"],
-    }).to_csv(tmp_path / "b.csv", index=False, encoding="utf-8-sig")
-    pd.DataFrame({
-        "基金代码": ["000001"],
-        "成立日期/规模": ["2020-01-01"],
-    }).to_csv(tmp_path / "e.csv", index=False, encoding="utf-8-sig")
-
-    logger = logging.getLogger("test")
-    result = pw._apply_filters(
-        purchase, "2024-01-01",
-        tmp_path / "a.csv", tmp_path / "b.csv", tmp_path / "c1.csv", tmp_path / "e.csv",
-        logger,
-    )
+    # b 跳过，c1+e 满足，应保留
     assert len(result) == 1
 
 
@@ -337,9 +201,6 @@ def test_apply_filters_empty_purchase(tmp_path: Path) -> None:
     purchase = _make_purchase_df([])
     pd.DataFrame(columns=["类型", "基金编码", "申购费率", "赎回费率"]).to_csv(
         tmp_path / "c1.csv", index=False, encoding="utf-8-sig"
-    )
-    pd.DataFrame(columns=["基金代码", "日期", "机构持有比例"]).to_csv(
-        tmp_path / "a.csv", index=False, encoding="utf-8-sig"
     )
     pd.DataFrame(columns=["基金代码", "日期", "期末净资产（亿元）"]).to_csv(
         tmp_path / "b.csv", index=False, encoding="utf-8-sig"
@@ -351,7 +212,7 @@ def test_apply_filters_empty_purchase(tmp_path: Path) -> None:
     logger = logging.getLogger("test")
     result = pw._apply_filters(
         purchase, "2024-01-01",
-        tmp_path / "a.csv", tmp_path / "b.csv", tmp_path / "c1.csv", tmp_path / "e.csv",
+        tmp_path / "b.csv", tmp_path / "c1.csv", tmp_path / "e.csv",
         logger,
     )
     assert len(result) == 0

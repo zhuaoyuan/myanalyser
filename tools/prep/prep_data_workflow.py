@@ -10,7 +10,9 @@
 4. 根据 x 获取基金费率全历史 (c)
 5. 根据 c 进行基金分类 (c.1)
 6. 根据 x 获取全体基金详情 (e)
-7. 筛选：x + c.1(存在) + a(date后且成立>2年后机构持仓连续两次>60%则排除) + b(曾规模>2亿) + e(date前成立) -> d.1
+7. 筛选：x + c.1(存在) + b(曾有规模>2亿) + e(date前成立) -> d.1
+
+说明：--date 仅用于规则 e（仅保留 date 之前成立的基金）。
 
 样例：
 python myanalyser/tools/prep/prep_data_workflow.py \
@@ -61,29 +63,6 @@ def _parse_date(text: object) -> pd.Timestamp | None:
     if num:
         return pd.to_datetime(num.group(0), errors="coerce")
     return pd.to_datetime(s, errors="coerce")
-
-
-def _has_consecutive_over_60(grp: pd.DataFrame, date_col: str) -> bool:
-    """该基金是否存在连续两次机构持仓>60%。"""
-    df = grp.dropna(subset=["_pct", date_col]).sort_values(date_col)
-    if len(df) < 2:
-        return False
-    vals = df["_pct"].values
-    for i in range(len(vals) - 1):
-        if vals[i] > 60 and vals[i + 1] > 60:
-            return True
-    return False
-
-
-def _parse_pct(val: object) -> float | None:
-    """解析百分比，如 63.45% -> 63.45。"""
-    if val is None or (isinstance(val, float) and pd.isna(val)):
-        return None
-    s = str(val).strip()
-    if not s or s == "---":
-        return None
-    m = re.match(r"([\d.]+)\s*%", s)
-    return float(m[1]) if m else None
 
 
 def _run_cli(script: str, args: list[str], logger: logging.Logger, stream_output: bool = True) -> bool:
@@ -296,19 +275,21 @@ def _step_e_overview(
 def _apply_filters(
     purchase_df: pd.DataFrame,
     date_str: str,
-    cyrjg_csv: Path,
     gmbd_csv: Path,
     fee_filtered_csv: Path,
     overview_csv: Path,
     logger: logging.Logger,
 ) -> pd.DataFrame:
-    """应用筛选条件，得到 d.1。"""
-    logger.info("[d.1] 开始应用筛选条件，起始日期 %s，候选 %d 只", date_str, len(set(purchase_df["基金代码"].dropna().map(_safe_code).tolist())))
+    """应用筛选条件，得到 d.1。
+
+    规则：c.1(存在) + b(曾有规模>2亿) + e(date前成立)。
+    date 仅用于规则 e。
+    """
+    logger.info("[d.1] 开始应用筛选条件，date=%s（仅用于规则e），候选 %d 只", date_str, len(set(purchase_df["基金代码"].dropna().map(_safe_code).tolist())))
     date_ts = pd.to_datetime(date_str)
     codes = set(purchase_df["基金代码"].dropna().map(_safe_code).tolist())
 
-    # 统一读取 overview，供 a、e 共用，避免重复 IO
-    inc_by_code: dict[str, pd.Timestamp] = {}
+    # 读取 overview，供 e 使用
     include_e: set[str] | None = None
     if overview_csv.exists():
         e_df = pd.read_csv(overview_csv, dtype=str)
@@ -319,12 +300,10 @@ def _apply_filters(
             e_df["_inc"] = e_df[col].map(_parse_date)
             inc_ok = e_df[e_df["_inc"].notna() & (e_df["_code"] != "")]
             inc_ok = inc_ok.sort_values("_inc", na_position="last")
-            # 与 inc_by_code 一致：每基金取最早成立日，再筛 date 前成立
             inc_dedup = inc_ok.drop_duplicates("_code", keep="first").set_index("_code")
-            inc_by_code = inc_dedup["_inc"].to_dict()
             include_e = set(inc_dedup.index[inc_dedup["_inc"] < date_ts])
         else:
-            include_e = None  # 无成立日期列时跳过 e 条件
+            include_e = None
 
     # c.1: 必须在 c.1 中存在
     if fee_filtered_csv.exists():
@@ -336,47 +315,19 @@ def _apply_filters(
     else:
         logger.warning("c.1 文件不存在，跳过该条件")
 
-    # a: 排除 date 之后、且基金成立大于2年后、机构持仓比例连续两次超过60%的基金
-    if cyrjg_csv.exists():
-        a_df = pd.read_csv(cyrjg_csv, dtype=str)
-        date_col = "日期" if "日期" in a_df.columns else "公告日期"
-        a_df = a_df.copy()
-        a_df[date_col] = pd.to_datetime(a_df[date_col], errors="coerce")
-        a_df = a_df[a_df[date_col] >= date_ts]  # date 之后
-        a_df["_pct"] = a_df["机构持有比例"].map(_parse_pct)
-        a_df["_code"] = a_df["基金代码"].map(_safe_code)
-        a_df = a_df[a_df["_code"] != ""]  # 过滤空 code 避免无效迭代
-
-        exclude_a: set[str] = set()
-        two_years = pd.DateOffset(years=2)
-        for code, grp in a_df.groupby("_code"):
-            inc = inc_by_code.get(code)
-            if inc is None:
-                continue  # 无成立日期则无法判断「成立>2年后」，不排除
-            cutoff = inc + two_years
-            sub = grp[grp[date_col] >= cutoff]
-            if _has_consecutive_over_60(sub, date_col):
-                exclude_a.add(code)
-        codes -= exclude_a
-        logger.info("[筛选] a(date后+成立>2年后+连续两次>60%%排除) 后 %d，排除 %d", len(codes), len(exclude_a))
-    else:
-        logger.warning("a 文件不存在，跳过该条件")
-
-    # b: 仅保留 date 至今发生过规模 > 2亿 的基金
+    # b: 仅保留曾有规模 > 2亿 的基金（不限时间）
     if gmbd_csv.exists():
         b_df = pd.read_csv(gmbd_csv, dtype=str)
-        b_df["日期"] = pd.to_datetime(b_df["日期"], errors="coerce")
-        b_df = b_df[b_df["日期"] >= date_ts]
         scale_col = "期末净资产（亿元）"
         if scale_col in b_df.columns:
             b_df["_scale"] = pd.to_numeric(b_df[scale_col], errors="coerce")
             include_b = set(b_df[b_df["_scale"] > 2]["基金代码"].dropna().map(_safe_code).tolist())
             codes &= include_b
-            logger.info("[筛选] b(规模>2亿) 后 %d", len(codes))
+            logger.info("[筛选] b(曾有规模>2亿) 后 %d", len(codes))
     else:
         logger.warning("b 文件不存在，跳过该条件")
 
-    # e: 仅保留 date 之前成立的基金（无法解析成立日期的排除），复用开头读取的 include_e
+    # e: 仅保留 date 之前成立的基金（无法解析成立日期的排除）
     if include_e is not None:
         codes &= include_e
         logger.info("[筛选] e(date前成立) 后 %d", len(codes))
@@ -429,7 +380,7 @@ def run(
     e_path = _step_e_overview(x_path, work_dir, overview_csv, log)
 
     # 7. 筛选 -> d.1
-    d1_df = _apply_filters(x_df, date_str, a_path, b_path, c1_path, e_path, log)
+    d1_df = _apply_filters(x_df, date_str, b_path, c1_path, e_path, log)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     d1_df.to_csv(output_path, index=False, encoding="utf-8-sig")
     log.info("[d.1] 最终结果 %d 行 -> %s", len(d1_df), output_path)

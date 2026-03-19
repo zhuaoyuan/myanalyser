@@ -8,7 +8,7 @@
 - eligible_fund_candidates.csv：base - personnel_excluded，加载时合并
 
 缓存策略：base/personnel 缓存不校验输入文件（fund_purchase、fund_fee_filtered 等）是否变更；
-若输入更新需使缓存失效，请手动删除对应 cache 目录。
+若输入更新或规则 a/b/e 等筛选逻辑变更，需手动删除对应 cache 目录使 base 缓存失效。
 """
 from __future__ import annotations
 
@@ -242,6 +242,7 @@ def run(
         include_e = None
 
     # a: 排除在 [max(成立+2年, start_ts), end_ts] 内机构持仓连续两次 > 60% 的基金
+    # 约定：a_df[date_col]、start_ts、end_ts 均为 naive datetime，无 timezone
     a_df = pd.read_csv(cyrjg_csv, dtype=str, encoding="utf-8-sig")
     date_col = "日期" if "日期" in a_df.columns else "公告日期"
     a_df = a_df.copy()
@@ -256,8 +257,10 @@ def run(
     for code, grp in a_df.groupby("_code"):
         inc = inc_by_code.get(code)
         if inc is None:
-            continue
+            continue  # overview 无成立日期，跳过；规则 e 另行处理可申购集合
         cutoff = max(inc + two_years, start_ts)
+        if cutoff > end_ts:
+            continue  # [cutoff, end_ts] 为空，无连续两次可判定，不排除
         sub = grp[grp[date_col] >= cutoff]  # grp 已限制 [start_ts,end_ts]，sub 为 [cutoff,end_ts]
         if _has_consecutive_over_60(sub, date_col):
             exclude_a.add(code)

@@ -33,8 +33,8 @@ source myanalyser/.venv312/bin/activate
 # V2 回归验证
 bash myanalyser/tools/v2/verify.sh
 
-# 全流程运行
-bash myanalyser/tools/v2/run_full_pipeline.sh
+# 全流程运行流程见 `myanalyser/docs/V2完整流程说明.md`
+
 ```
 
 ## 关键文档
